@@ -1,0 +1,283 @@
+/* TAMS Web UI — post-production grey theme */
+:root {
+  --bg: #2b2b2b;
+  --panel: #333333;
+  --border: #444444;
+  --text: #e0e0e0;
+  --text-muted: #999999;
+  --accent: #5a9fd4;
+  --accent-hover: #79b4e0;
+  --warning: #d4a05a;
+  --error: #d45a5a;
+  --success: #5ad47a;
+  --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: var(--text);
+  background-color: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+#app {
+  display: flex;
+  min-height: 100vh;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--accent-hover);
+}
+
+h1, h2, h3 {
+  margin: 0 0 0.5em;
+  font-weight: 500;
+}
+
+h1 { font-size: 1.5em; }
+h2 { font-size: 1.25em; }
+h3 { font-size: 1.1em; }
+
+/* Buttons */
+button, .btn {
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  padding: 0.4em 0.8em;
+  font-size: 0.875em;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--panel);
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+button:hover, .btn:hover {
+  border-color: var(--accent);
+  background: #3a3a3a;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+button.primary {
+  background: var(--accent);
+  color: #1a1a1a;
+  border-color: var(--accent);
+}
+button.primary:hover {
+  background: var(--accent-hover);
+}
+button.danger {
+  border-color: var(--error);
+  color: var(--error);
+}
+button.danger:hover {
+  background: var(--error);
+  color: #fff;
+}
+
+/* Inputs */
+input, select, textarea {
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  padding: 0.4em 0.6em;
+  font-size: 0.875em;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--bg);
+}
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875em;
+}
+th, td {
+  text-align: left;
+  padding: 0.5em 0.75em;
+  border-bottom: 1px solid var(--border);
+}
+th {
+  font-weight: 500;
+  color: var(--text-muted);
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+tr:hover td {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* Utility classes */
+.mono {
+  font-family: var(--mono);
+  font-size: 0.85em;
+}
+.muted {
+  color: var(--text-muted);
+}
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1em;
+}
+.error-text {
+  color: var(--error);
+}
+.success-text {
+  color: var(--success);
+}
+.badge {
+  display: inline-block;
+  padding: 0.15em 0.5em;
+  border-radius: 3px;
+  font-size: 0.75em;
+  background: var(--border);
+  color: var(--text-muted);
+}
+
+/* Page layout */
+.page {
+  padding: 1.5em;
+  width: 100%;
+}
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1em;
+}
+
+/* Detail grids (dl/dt/dd) */
+.detail-grid {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.25em 1em;
+}
+.detail-grid dt {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+.detail-grid dd {
+  margin: 0;
+}
+
+/* Omakase Player overrides */
+.omakase-player .omakase-player-wrapper {
+  width: 100% !important;
+}
+.omakase-player video {
+  width: 100% !important;
+  object-fit: contain;
+}
+.omakase-timeline-timecode {
+  background: #2b2b2b !important;
+}
+.omakase-timeline-timecode span {
+  color: #ffffff !important;
+}
+
+/* Timerange: raw string always copy-pastable */
+.timerange-raw {
+  user-select: all;
+  -webkit-user-select: all;
+  cursor: text;
+}
+
+/* Filter bars (shared by Sources, Flows, etc.) */
+.filter-bar {
+  display: flex;
+  gap: 0.5em;
+  margin-bottom: 1em;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.filter-input {
+  font-size: 0.85em;
+  padding: 0.3em 0.5em;
+}
+.filter-sm {
+  max-width: 8em;
+}
+.filter-xs {
+  max-width: 5em;
+}
+.btn-secondary {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+/* Inline edit sections (shared by Dashboard, SourceDetail, etc.) */
+.edit-section {
+  margin-top: 1em;
+  border-top: 1px solid var(--border);
+  padding-top: 0.75em;
+}
+.edit-section label {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  margin-bottom: 0.5em;
+}
+.label-text {
+  min-width: 5em;
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+.edit-section input {
+  flex: 1;
+}
+.edit-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75em;
+  margin-top: 0.25em;
+}
+.edit-actions span {
+  font-size: 0.85em;
+}
+.btn-small {
+  font-size: 0.8em;
+  padding: 0.25em 0.6em;
+}
+.btn-danger {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+/* Tags */
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5em;
+}
+.tag {
+  background: var(--border);
+  padding: 0.2em 0.6em;
+  border-radius: 3px;
+  font-size: 0.8em;
+  font-family: var(--mono);
+}

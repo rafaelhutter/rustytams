@@ -1,0 +1,2 @@
+# Development/testing dependencies (on top of tams/examples/requirements.txt)
+schemathesis>=4.12

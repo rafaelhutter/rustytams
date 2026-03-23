@@ -1,0 +1,6 @@
+[submodule "tams"]
+	path = tams
+	url = https://github.com/bbc/tams
+[submodule "rustfs"]
+	path = rustfs
+	url = https://github.com/rustfs/rustfs.git

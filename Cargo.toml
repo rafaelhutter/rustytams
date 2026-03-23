@@ -1,0 +1,3 @@
+[workspace]
+members = ["tams-types", "tams-store", "tams-auth", "tams-server", "tams-auth-server"]
+resolver = "2"

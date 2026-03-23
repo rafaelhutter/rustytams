@@ -1,0 +1,10 @@
+# Schemathesis auth configuration for TAMS spec compliance testing.
+# Matches the security schemes defined in the OpenAPI spec.
+# OR semantics: any one scheme is sufficient for authentication.
+
+[auth.openapi.url_token_auth]
+api_key = "test-api-key"
+
+[auth.openapi.basic_auth]
+username = "test"
+password = "password"
