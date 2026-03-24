@@ -35,6 +35,12 @@ curl -s -u test:password http://localhost:5800/service | python3 -m json.tool
 # Run all tests (Rust + web)
 make test
 
+# Run API integration tests against live server (129 requests, 80 endpoints)
+make hurl-test
+
+# Verify test coverage matches the OpenAPI spec
+make hurl-coverage
+
 # Stop everything
 make stop-all
 ```
@@ -45,6 +51,7 @@ make stop-all
 - Node.js (for web UI)
 - Python 3 (for web UI backend and integration tests)
 - AWS CLI (for S3 bucket creation during `make run-rustfs`)
+- [Hurl](https://hurl.dev) (for API integration tests — `brew install hurl`)
 - ffmpeg (for generating sample content)
 
 ## Services
@@ -75,6 +82,7 @@ See [docs/web-ui.md](docs/web-ui.md) for full feature list and [docs/walkthrough
 - [Walkthrough](docs/walkthrough.md) — step-by-step guide with screenshots
 - [Configuration](docs/configuration.md) — CLI arguments, default credentials
 - [Integration Tests](docs/integration-tests.md) — end-to-end testing with BBC TAMS scripts
+- [API Testing](docs/api-testing.md) — Hurl integration tests and spec coverage
 
 ## Make Targets
 
@@ -85,6 +93,8 @@ make build              Build all Rust crates
 make test               Run all tests (Rust + web)
 make run-all            Start all services
 make stop-all           Stop all services
+make hurl-test          Run API integration tests (requires running server)
+make hurl-coverage      Verify Hurl tests cover all 80 spec operations
 make check              Full CI check (format + lint + test)
 make clean-data         Remove all data (flows, segments, media)
 make install-web        Install web UI dependencies

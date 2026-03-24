@@ -4,7 +4,7 @@
        stop-auth stop-server stop-web stop-all \
        status venv integration-test generate-media web-fixtures clean-data \
        web-venv install-web build-web test-web test-web-js test-web-flask \
-       lint-web format-web check-web spec-check swagger-ui
+       lint-web format-web check-web spec-check swagger-ui hurl-test hurl-coverage
 
 PIDS_DIR := .pids
 VENV := venv
@@ -259,6 +259,12 @@ integration-test: venv sample-content ## Run full integration test (start -> ing
 		echo "=== FAIL: Output file missing or empty ==="; \
 		exit 1; \
 	fi
+
+hurl-test: ## Run Hurl API integration tests (requires running server + hurl)
+	hurl --test tests/api.hurl tests/errors.hurl
+
+hurl-coverage: venv $(SWAGGER_UI_DIR)/api-spec.yaml ## Audit Hurl test coverage against OpenAPI spec
+	$(PYTHON) scripts/check-hurl-coverage.py
 
 spec-check: venv $(SWAGGER_UI_DIR)/api-spec.yaml ## Validate API responses against TAMS OpenAPI spec (requires running server)
 	@echo "=== Spec Compliance Check (schemathesis) ==="

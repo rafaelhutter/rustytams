@@ -4,6 +4,7 @@
 Schemathesis cannot resolve external $ref in examples, so this script
 inlines them before running spec-check.
 """
+
 import json
 import sys
 from pathlib import Path
@@ -23,7 +24,6 @@ def resolve_refs(obj, base_dir: Path):
                     else:
                         resolved = yaml.safe_load(f)
                 return resolve_refs(resolved, ref_path.parent)
-            # Can't resolve — leave as-is
             return obj
         return {k: resolve_refs(v, base_dir) for k, v in obj.items()}
     elif isinstance(obj, list):
@@ -32,8 +32,14 @@ def resolve_refs(obj, base_dir: Path):
 
 
 def main():
-    spec_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("tams/api/TimeAddressableMediaStore.yaml")
-    output_path = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(".resolved-spec.yaml")
+    spec_path = (
+        Path(sys.argv[1])
+        if len(sys.argv) > 1
+        else Path("tams/api/TimeAddressableMediaStore.yaml")
+    )
+    output_path = (
+        Path(sys.argv[2]) if len(sys.argv) > 2 else Path(".resolved-spec.yaml")
+    )
 
     with open(spec_path) as f:
         spec = yaml.safe_load(f)
@@ -41,7 +47,9 @@ def main():
     resolved = resolve_refs(spec, spec_path.parent)
 
     with open(output_path, "w") as f:
-        yaml.dump(resolved, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        yaml.dump(
+            resolved, f, default_flow_style=False, allow_unicode=True, sort_keys=False
+        )
 
     print(f"Resolved {spec_path} -> {output_path}")
 
