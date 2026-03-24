@@ -1,4 +1,5 @@
 pub mod delete_requests;
+pub mod docs;
 pub mod flow_props;
 pub mod flows;
 pub mod objects;

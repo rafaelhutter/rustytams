@@ -26,6 +26,9 @@ make status
 # Open the web UI
 open http://localhost:5803    # login: test / password
 
+# Browse the API docs (Swagger UI)
+open http://localhost:5800/docs
+
 # Try the API directly
 curl -s -u test:password http://localhost:5800/service | python3 -m json.tool
 
@@ -52,6 +55,12 @@ make stop-all
 | tams-server | 5800 | TAMS API (sources, flows, segments, webhooks) |
 | tams-auth-server | 5802 | Auth (Basic auth, API keys, Bearer tokens) |
 | tams-web | 5803 | Web UI (Svelte 5 SPA + Flask) |
+
+## API Documentation
+
+Interactive API docs are served at [http://localhost:5800/docs](http://localhost:5800/docs) via Swagger UI. The full OpenAPI spec is also available as YAML at [http://localhost:5800/api-spec](http://localhost:5800/api-spec).
+
+The spec implements the [BBC TAMS API](https://github.com/bbc/tams) (v8.0, OpenAPI 3.1).
 
 ## Web UI
 

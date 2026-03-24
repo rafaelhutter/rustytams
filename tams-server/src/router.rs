@@ -54,6 +54,10 @@ fn build_router(store: Store, auth_client: AuthClient) -> Router {
     Router::new()
         .hoop(affix_state::inject(store))
         .hoop(affix_state::inject(auth_client))
+        // Docs (unauthenticated, embedded at compile time)
+        .push(Router::with_path("docs").get(handlers::docs::get_docs))
+        .push(Router::with_path("docs/{file}").get(handlers::docs::get_docs_asset))
+        .push(Router::with_path("api-spec").get(handlers::docs::get_api_spec))
         .push(
             // /token -- no auth required (this IS the auth endpoint)
             Router::with_path("token").post(auth_middleware::post_token),

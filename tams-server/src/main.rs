@@ -39,5 +39,6 @@ async fn main() {
         .bind()
         .await;
     tracing::info!("RustyTAMS listening on port {}", config.port);
+    tracing::info!("API docs at http://localhost:{}/docs", config.port);
     salvo::prelude::Server::new(acceptor).serve(service).await;
 }

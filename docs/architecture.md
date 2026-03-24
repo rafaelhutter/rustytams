@@ -12,7 +12,7 @@ Client --> rustfs:9000             (S3-compatible media object store)
 tams-server --> tams-auth-server:5802  (credential validation)
 ```
 
-- **tams-server** (port 5800) -- TAMS API. Handles all metadata operations (sources, flows, segments, storage allocation, webhooks). Generates S3 presigned URLs so clients can upload/download media directly from the object store.
+- **tams-server** (port 5800) -- TAMS API. Handles all metadata operations (sources, flows, segments, storage allocation, webhooks). Generates S3 presigned URLs so clients can upload/download media directly from the object store. Serves interactive API docs at `/docs` (Swagger UI) and the OpenAPI spec at `/api-spec`.
 - **rustfs** (port 9000) -- S3-compatible object store ([RustFS](https://github.com/rustfs/rustfs), included as a git submodule). Clients talk to it directly using presigned URLs obtained from the TAMS API. Any S3-compatible store (AWS S3, MinIO, etc.) can be used instead.
 - **tams-auth-server** (port 5802) -- Auth service. Token issuance and credential validation (Basic auth, API keys, Bearer tokens).
 - **tams-web** (port 5803) -- Web UI. Svelte 5 SPA served by a Python/Flask static server. Talks to tams-server for metadata; media upload/download uses presigned S3 URLs from the API.

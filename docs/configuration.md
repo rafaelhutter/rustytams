@@ -15,6 +15,12 @@ Each service accepts CLI arguments.
 --auth-url             Base URL of auth server (default: http://localhost:5802)
 ```
 
+API documentation is served automatically:
+- `/docs` — interactive Swagger UI (no authentication required)
+- `/api-spec` — raw OpenAPI 3.1 YAML specification
+
+The Swagger UI assets are downloaded once via `make swagger-ui` and the OpenAPI spec is resolved from the BBC TAMS spec during `make build`. Both are embedded into the binary at compile time.
+
 ## rustfs (S3 object store)
 
 RustFS is built from source as a git submodule. Configuration is via environment variables:

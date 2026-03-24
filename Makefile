@@ -4,7 +4,7 @@
        stop-auth stop-server stop-web stop-all \
        status venv integration-test generate-media web-fixtures clean-data \
        web-venv install-web build-web test-web test-web-js test-web-flask \
-       lint-web format-web check-web spec-check
+       lint-web format-web check-web spec-check swagger-ui
 
 PIDS_DIR := .pids
 VENV := venv
@@ -14,6 +14,10 @@ RUSTFS_DATA := rustfs-data
 RUSTFS_PORT := 9000
 RUSTFS_ACCESS_KEY := rustfsadmin
 RUSTFS_SECRET_KEY := rustfsadmin123
+SWAGGER_UI_VERSION := 5.32.1
+SWAGGER_UI_DIR := tams-server/swagger-ui
+SWAGGER_UI_BASE := https://unpkg.com/swagger-ui-dist@$(SWAGGER_UI_VERSION)
+TAMS_SPEC := tams/api/TimeAddressableMediaStore.yaml
 TAMS_EXAMPLES := tams/examples
 WEB_VENV := tams-web/venv
 WEB_PYTHON := $(WEB_VENV)/bin/python
@@ -26,9 +30,24 @@ help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
+# --- Swagger UI ---
+
+$(SWAGGER_UI_DIR)/swagger-ui-bundle.js:
+	@echo "Downloading Swagger UI $(SWAGGER_UI_VERSION)..."
+	@mkdir -p $(SWAGGER_UI_DIR)
+	curl -sL $(SWAGGER_UI_BASE)/swagger-ui-bundle.js -o $(SWAGGER_UI_DIR)/swagger-ui-bundle.js
+	curl -sL $(SWAGGER_UI_BASE)/swagger-ui.css -o $(SWAGGER_UI_DIR)/swagger-ui.css
+	curl -sL $(SWAGGER_UI_BASE)/swagger-ui-standalone-preset.js -o $(SWAGGER_UI_DIR)/swagger-ui-standalone-preset.js
+	curl -sL $(SWAGGER_UI_BASE)/favicon-32x32.png -o $(SWAGGER_UI_DIR)/favicon-32x32.png
+
+swagger-ui: $(SWAGGER_UI_DIR)/swagger-ui-bundle.js ## Download Swagger UI assets
+
+$(SWAGGER_UI_DIR)/api-spec.yaml: $(TAMS_SPEC) scripts/resolve-spec.py venv
+	$(PYTHON) scripts/resolve-spec.py $(TAMS_SPEC) $(SWAGGER_UI_DIR)/api-spec.yaml
+
 # --- Build / Test / Lint ---
 
-build: ## Build all crates
+build: swagger-ui $(SWAGGER_UI_DIR)/api-spec.yaml ## Build all crates
 	cargo build --workspace
 
 test: test-web ## Run all unit tests
@@ -241,15 +260,9 @@ integration-test: venv sample-content ## Run full integration test (start -> ing
 		exit 1; \
 	fi
 
-TAMS_SPEC := tams/api/TimeAddressableMediaStore.yaml
-RESOLVED_SPEC := .resolved-spec.yaml
-
-$(RESOLVED_SPEC): $(TAMS_SPEC) scripts/resolve-spec.py
-	$(PYTHON) scripts/resolve-spec.py $(TAMS_SPEC) $(RESOLVED_SPEC)
-
-spec-check: venv $(RESOLVED_SPEC) ## Validate API responses against TAMS OpenAPI spec (requires running server)
+spec-check: venv $(SWAGGER_UI_DIR)/api-spec.yaml ## Validate API responses against TAMS OpenAPI spec (requires running server)
 	@echo "=== Spec Compliance Check (schemathesis) ==="
-	$(VENV)/bin/st run $(RESOLVED_SPEC) \
+	$(VENV)/bin/st run $(SWAGGER_UI_DIR)/api-spec.yaml \
 		--url http://localhost:5800 \
 		--max-examples 10 \
 		|| true

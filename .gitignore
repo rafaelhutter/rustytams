@@ -13,7 +13,11 @@
 /tams-web/frontend/research/
 /tams-web/node_modules/
 __pycache__/
-.resolved-spec.yaml
+tams-server/swagger-ui/swagger-ui-bundle.js
+tams-server/swagger-ui/swagger-ui.css
+tams-server/swagger-ui/swagger-ui-standalone-preset.js
+tams-server/swagger-ui/favicon-32x32.png
+tams-server/swagger-ui/api-spec.yaml
 /rustfs-data
 /node_modules/
 .hypothesis
