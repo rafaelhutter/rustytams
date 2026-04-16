@@ -48,6 +48,8 @@ jobs:
       - name: Image-Tag bestimmen
         id: tag
         run: |
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          echo "sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "value=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.ref_type }}" == "tag" ]]; then
@@ -74,6 +76,7 @@ jobs:
           push: true
           tags: |
             ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ steps.tag.outputs.value }}
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ steps.tag.outputs.sha }}
             ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:latest
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
