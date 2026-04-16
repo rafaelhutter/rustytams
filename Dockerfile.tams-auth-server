@@ -1,0 +1,66 @@
+# =============================================================================
+# Multi-Stage Build: tams-auth-server
+# Stage 1: Build (Rust)
+# Stage 2: Runtime (minimal Debian)
+# =============================================================================
+
+# --- Stage 1: Builder --------------------------------------------------------
+FROM rust:1.92-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Cargo-Manifest zuerst kopieren für optimales Layer-Caching
+COPY Cargo.toml Cargo.lock ./
+COPY tams-types/Cargo.toml ./tams-types/
+COPY tams-store/Cargo.toml ./tams-store/
+COPY tams-auth/Cargo.toml ./tams-auth/
+COPY tams-server/Cargo.toml ./tams-server/
+COPY tams-auth-server/Cargo.toml ./tams-auth-server/
+
+# Dummy-Sourcen für Dependency-Caching erstellen
+RUN mkdir -p tams-types/src tams-store/src tams-auth/src tams-server/src tams-auth-server/src && \
+    echo "pub fn dummy() {}" > tams-types/src/lib.rs && \
+    echo "pub fn dummy() {}" > tams-store/src/lib.rs && \
+    echo "pub fn dummy() {}" > tams-auth/src/lib.rs && \
+    echo "fn main() {}" > tams-server/src/main.rs && \
+    echo "fn main() {}" > tams-auth-server/src/main.rs
+
+# Abhängigkeiten vorab kompilieren (Caching)
+RUN cargo build --release --bin tams-auth-server 2>/dev/null || true
+
+# Echten Source-Code kopieren
+COPY tams-types/src ./tams-types/src
+COPY tams-store/src ./tams-store/src
+COPY tams-auth/src ./tams-auth/src
+COPY tams-auth-server/src ./tams-auth-server/src
+
+# Timestamps aktualisieren damit Cargo neu baut
+RUN touch tams-types/src/lib.rs tams-store/src/lib.rs tams-auth/src/lib.rs tams-auth-server/src/main.rs
+
+# Finalen Build
+RUN cargo build --release --bin tams-auth-server
+
+# --- Stage 2: Runtime --------------------------------------------------------
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r tams && useradd -r -g tams tams
+
+COPY --from=builder /build/target/release/tams-auth-server /usr/local/bin/tams-auth-server
+RUN chmod +x /usr/local/bin/tams-auth-server
+
+USER tams
+EXPOSE 5801
+
+ENV RUST_LOG=info
+
+ENTRYPOINT ["/usr/local/bin/tams-auth-server"]
