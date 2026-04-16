@@ -26,9 +26,9 @@ jobs:
       matrix:
         include:
           - service: tams-server
-            dockerfile: Dockerfile.tams-server
+            dockerfile: build/Dockerfile.tams-server
           - service: tams-auth-server
-            dockerfile: Dockerfile.tams-auth-server
+            dockerfile: build/Dockerfile.tams-auth-server
 
     steps:
       - name: Checkout (mit Submodulen)
