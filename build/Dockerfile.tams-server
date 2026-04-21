@@ -61,12 +61,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Non-root User für Sicherheit
 RUN groupadd -r tams && useradd -r -g tams tams
 
+# Persistenz-Verzeichnis mit korrekten Berechtigungen
+RUN mkdir -p /data && chown tams:tams /data
+
 COPY --from=builder /build/target/release/tams-server /usr/local/bin/tams-server
-RUN chmod +x /usr/local/bin/tams-server
+COPY build/entrypoint-tams-server.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/tams-server /usr/local/bin/entrypoint.sh
 
 USER tams
 EXPOSE 5800
 
 ENV RUST_LOG=info
 
-ENTRYPOINT ["/usr/local/bin/tams-server"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
