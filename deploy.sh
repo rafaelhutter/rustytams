@@ -25,7 +25,7 @@ log_section() { echo -e "\n${BOLD}━━━ $* ━━━━━━━━━━━
 
 # --- Konfiguration -----------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHART_DIR="${SCRIPT_DIR}/rustytams/helm/tams"
+CHART_DIR="${SCRIPT_DIR}/helm/tams"
 export KUBECONFIG="/Users/r.hutter/.kube/rancher.surfplanet.yaml"
 
 # Lade .env

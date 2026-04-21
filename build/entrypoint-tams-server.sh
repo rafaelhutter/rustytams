@@ -2,7 +2,7 @@
 # Translates environment variables (set via Kubernetes secrets/configmaps)
 # to CLI arguments expected by tams-server (clap-based).
 exec /usr/local/bin/tams-server \
-  --data-dir /data \
+  --mongo-uri "${MONGO_URI:-mongodb://localhost:27017}" \
   --s3-endpoint "https://${B2_ENDPOINT}" \
   --s3-bucket "${B2_BUCKET}" \
   --s3-access-key "${B2_ACCESS_KEY_ID}" \
