@@ -71,6 +71,7 @@ impl From<StoreError> for AppError {
             StoreError::ReadOnly => AppError::forbidden("Resource is read-only"),
             StoreError::BadRequest(msg) => AppError::bad_request(msg),
             StoreError::Internal(msg) => AppError::internal(msg),
+            StoreError::Database(msg) => AppError::internal(msg),
         }
     }
 }

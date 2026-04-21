@@ -5,7 +5,22 @@ pub enum StoreError {
     ReadOnly,
     BadRequest(String),
     Internal(String),
+    Database(String),
 }
+
+impl std::fmt::Display for StoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(s) => write!(f, "Not found: {s}"),
+            Self::ReadOnly => write!(f, "Resource is read-only"),
+            Self::BadRequest(s) => write!(f, "Bad request: {s}"),
+            Self::Internal(s) => write!(f, "Internal error: {s}"),
+            Self::Database(s) => write!(f, "Database error: {s}"),
+        }
+    }
+}
+
+impl std::error::Error for StoreError {}
 
 /// Status lifecycle for deletion requests.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -29,7 +29,7 @@ async fn main() {
         region: config.s3_region.clone(),
     };
 
-    let store = Store::new(&config.data_dir, s3_config)
+    let store = Store::new(&config.mongo_uri, s3_config)
         .await
         .expect("failed to initialize store");
     let auth_client = AuthClient::new(&config.auth_url);

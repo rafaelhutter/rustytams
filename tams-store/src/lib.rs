@@ -1,8 +1,13 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
+
+use bson::{doc, Document};
+use futures::TryStreamExt;
+use mongodb::options::ReplaceOptions;
+use mongodb::Collection;
 
 use aws_credential_types::Credentials;
 use aws_sdk_s3::config::{Builder as S3ConfigBuilder, Region};
@@ -25,6 +30,25 @@ use tams_types::timerange::TimeRange;
 use tams_types::webhook::{webhook_matches_event, StoreEvent, StoredWebhook, WebhookStatus};
 
 pub use tams_types::error::StoreError;
+
+/// Convert a MongoDB error to a StoreError.
+fn mongo_io_err(e: mongodb::error::Error) -> std::io::Error {
+    std::io::Error::other(e.to_string())
+}
+
+fn to_store_err(e: mongodb::error::Error) -> StoreError {
+    StoreError::Database(e.to_string())
+}
+
+/// Serialize serde_json::Value to BSON Document.
+fn to_bson(val: &serde_json::Value) -> std::io::Result<Document> {
+    bson::to_document(val).map_err(|e| std::io::Error::other(e.to_string()))
+}
+
+/// Deserialize BSON Document to serde_json::Value.
+fn from_bson(doc: Document) -> std::io::Result<serde_json::Value> {
+    bson::from_document(doc).map_err(|e| std::io::Error::other(e.to_string()))
+}
 
 /// Presigned URL expiry time (1 hour).
 const PRESIGN_EXPIRY: Duration = Duration::from_secs(3600);
@@ -51,28 +75,28 @@ impl std::fmt::Debug for S3Config {
     }
 }
 
-const SERVICE_FILE: &str = "service.json";
-const SOURCES_FILE: &str = "sources.json";
-const FLOWS_FILE: &str = "flows.json";
-const SEGMENTS_DIR: &str = "segments";
-const INSTANCES_FILE: &str = "object_instances.json";
-const WEBHOOKS_FILE: &str = "webhooks.json";
+const COLL_SOURCES: &str = "sources";
+const COLL_FLOWS: &str = "flows";
+const COLL_SEGMENTS: &str = "segments";
+const COLL_INSTANCES: &str = "object_instances";
+const COLL_WEBHOOKS: &str = "webhooks";
+const COLL_SERVICE: &str = "service";
+const COLL_DELETION_REQUESTS: &str = "deletion_requests";
 
 struct StoreInner {
-    data_dir: PathBuf,
+    db: mongodb::Database,
+    /// In-memory: flows/sources/segments/instances/webhooks/service/deletion_requests
+    /// kept for zero-downtime reads and for the webhook dispatch loop.
     service_info: RwLock<ServiceInfo>,
     storage_backends: Vec<StorageBackend>,
     sources: RwLock<HashMap<String, Source>>,
     flows: RwLock<HashMap<String, StoredFlow>>,
     segments: RwLock<HashMap<String, Vec<StoredSegment>>>,
-    /// Uncontrolled instances per object_id (registered via POST /objects/{id}/instances).
     object_instances: RwLock<HashMap<String, Vec<UncontrolledInstance>>>,
     webhooks: RwLock<HashMap<String, StoredWebhook>>,
-    /// Tracked deletion requests (async flow/segment deletions).
     deletion_requests: RwLock<HashMap<String, DeletionRequest>>,
-    /// Serialize persist calls per file to prevent concurrent writes from
-    /// reverting newer state with older serialized data. Each mutex guards
-    /// the read-serialize-write sequence for its file.
+    /// Legacy persist mutexes – replaced by MongoDB writes; kept as no-ops
+    /// so we can remove them incrementally without touching every call site.
     persist_service: Mutex<()>,
     persist_sources: Mutex<()>,
     persist_flows: Mutex<()>,
@@ -93,119 +117,211 @@ pub struct Store {
 }
 
 impl Store {
-    pub async fn new(data_dir: &Path, s3: S3Config) -> std::io::Result<Self> {
-        tokio::fs::create_dir_all(data_dir).await?;
-        let segments_dir = data_dir.join(SEGMENTS_DIR);
-        tokio::fs::create_dir_all(&segments_dir).await?;
+    pub async fn new(mongo_uri: &str, s3: S3Config) -> Result<Self, StoreError> {
+        // Connect to MongoDB
+        let client = mongodb::Client::with_uri_str(mongo_uri)
+            .await
+            .map_err(to_store_err)?;
+        let db = client.database("tams");
 
-        // Load service info
-        let service_path = data_dir.join(SERVICE_FILE);
-        let service_info = match tokio::fs::read_to_string(&service_path).await {
-            Ok(contents) => serde_json::from_str(&contents)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let info = ServiceInfo::default();
-                let json = serde_json::to_string_pretty(&info).map_err(std::io::Error::other)?;
-                atomic_write(&service_path, &json).await?;
-                info
-            }
-            Err(e) => return Err(e),
-        };
+        // Create indexes --------------------------------------------------------
+        use mongodb::IndexModel;
+        use bson::doc;
 
-        // Load sources from disk
-        let sources_path = data_dir.join(SOURCES_FILE);
-        let sources: HashMap<String, Source> = match tokio::fs::read_to_string(&sources_path).await
+        // sources: unique on id
+        db.collection::<Document>(COLL_SOURCES)
+            .create_index(IndexModel::builder().keys(doc! { "id": 1 }).options(
+                mongodb::options::IndexOptions::builder().unique(true).build(),
+            ).build())
+            .await
+            .map_err(to_store_err)?;
+
+        // flows: unique on id
+        db.collection::<Document>(COLL_FLOWS)
+            .create_index(IndexModel::builder().keys(doc! { "id": 1 }).options(
+                mongodb::options::IndexOptions::builder().unique(true).build(),
+            ).build())
+            .await
+            .map_err(to_store_err)?;
+
+        // segments: compound (flow_id, ts_start) + object_id
         {
-            Ok(contents) => serde_json::from_str(&contents)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
-            Err(e) => return Err(e),
-        };
-
-        // Load flows from disk — stored as map of id → document (serde_json::Value)
-        let flows_path = data_dir.join(FLOWS_FILE);
-        let flows: HashMap<String, StoredFlow> = match tokio::fs::read_to_string(&flows_path).await
-        {
-            Ok(contents) => {
-                let docs: HashMap<String, serde_json::Value> = serde_json::from_str(&contents)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-                docs.into_iter()
-                    .filter_map(|(id, doc)| {
-                        let core = flow_core_from_document(&doc)?;
-                        Some((
-                            id,
-                            StoredFlow {
-                                core,
-                                document: doc,
-                            },
-                        ))
-                    })
-                    .collect()
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
-            Err(e) => return Err(e),
-        };
-
-        // Load segments from disk — one JSON file per flow in data/segments/
-        let mut segments: HashMap<String, Vec<StoredSegment>> = HashMap::new();
-        let mut dir = tokio::fs::read_dir(&segments_dir).await?;
-        while let Some(entry) = dir.next_entry().await? {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                let flow_id = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                if flow_id.is_empty() {
-                    continue;
-                }
-                let contents = tokio::fs::read_to_string(&path).await?;
-                let docs: Vec<serde_json::Value> = serde_json::from_str(&contents)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-                let stored: Vec<StoredSegment> = docs
-                    .into_iter()
-                    .filter_map(|doc| {
-                        let tr_str = doc.get("timerange")?.as_str()?;
-                        let timerange: TimeRange = tr_str.parse().ok()?;
-                        let object_id = doc.get("object_id")?.as_str()?.to_string();
-                        Some(StoredSegment {
-                            timerange,
-                            object_id,
-                            document: doc,
-                        })
-                    })
-                    .collect();
-                if !stored.is_empty() {
-                    segments.insert(flow_id, stored);
-                }
-            }
+            let col = db.collection::<Document>(COLL_SEGMENTS);
+            col.create_index(IndexModel::builder().keys(doc! { "flow_id": 1, "ts_start": 1 }).build())
+                .await
+                .map_err(to_store_err)?;
+            col.create_index(IndexModel::builder().keys(doc! { "object_id": 1 }).build())
+                .await
+                .map_err(to_store_err)?;
         }
 
-        // Load object instances from disk
-        let instances_path = data_dir.join(INSTANCES_FILE);
-        let object_instances: HashMap<String, Vec<UncontrolledInstance>> =
-            match tokio::fs::read_to_string(&instances_path).await {
-                Ok(contents) => serde_json::from_str(&contents)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
-                Err(e) => return Err(e),
-            };
+        // object_instances: unique on object_id
+        db.collection::<Document>(COLL_INSTANCES)
+            .create_index(IndexModel::builder().keys(doc! { "object_id": 1 }).options(
+                mongodb::options::IndexOptions::builder().unique(true).build(),
+            ).build())
+            .await
+            .map_err(to_store_err)?;
 
-        // Load webhooks from disk
-        let webhooks_path = data_dir.join(WEBHOOKS_FILE);
-        let webhooks: HashMap<String, StoredWebhook> =
-            match tokio::fs::read_to_string(&webhooks_path).await {
-                Ok(contents) => serde_json::from_str(&contents)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
-                Err(e) => return Err(e),
-            };
+        // webhooks: unique on id
+        db.collection::<Document>(COLL_WEBHOOKS)
+            .create_index(IndexModel::builder().keys(doc! { "id": 1 }).options(
+                mongodb::options::IndexOptions::builder().unique(true).build(),
+            ).build())
+            .await
+            .map_err(to_store_err)?;
 
-        // Create event dispatch channel
+        // deletion_requests: unique on id
+        db.collection::<Document>(COLL_DELETION_REQUESTS)
+            .create_index(IndexModel::builder().keys(doc! { "id": 1 }).options(
+                mongodb::options::IndexOptions::builder().unique(true).build(),
+            ).build())
+            .await
+            .map_err(to_store_err)?;
+
+        // Load data from MongoDB into in-memory maps ----------------------------
+
+        // service info
+        let service_info = {
+            let col = db.collection::<Document>(COLL_SERVICE);
+            match col.find_one(doc! { "_id": "singleton" }).await.map_err(to_store_err)? {
+                Some(d) => {
+                    let v = from_bson(d).map_err(|e| StoreError::Database(e.to_string()))?;
+                    serde_json::from_value::<ServiceInfo>(v)
+                        .map_err(|e| StoreError::Database(e.to_string()))?
+                }
+                None => {
+                    // Insert defaults
+                    let info = ServiceInfo::default();
+                    let mut doc = to_bson(&serde_json::to_value(&info)
+                        .map_err(|e| StoreError::Database(e.to_string()))?)
+                        .map_err(|e| StoreError::Database(e.to_string()))?;
+                    doc.insert("_id", "singleton");
+                    col.insert_one(doc).await.map_err(to_store_err)?;
+                    info
+                }
+            }
+        };
+
+        // sources
+        let sources: HashMap<String, Source> = {
+            let col = db.collection::<Document>(COLL_SOURCES);
+            let cursor = col.find(doc! {}).await.map_err(to_store_err)?;
+            let docs: Vec<Document> = cursor.try_collect().await.map_err(to_store_err)?;
+            let mut map = HashMap::new();
+            for d in docs {
+                let Ok(v) = from_bson(d) else { continue };
+                if let Ok(src) = serde_json::from_value::<Source>(v) {
+                    map.insert(src.id.clone(), src);
+                }
+            }
+            map
+        };
+
+        // flows
+        let flows: HashMap<String, StoredFlow> = {
+            let col = db.collection::<Document>(COLL_FLOWS);
+            let cursor = col.find(doc! {}).await.map_err(to_store_err)?;
+            let docs: Vec<Document> = cursor.try_collect().await.map_err(to_store_err)?;
+            let mut map = HashMap::new();
+            for d in docs {
+                let Ok(v) = from_bson(d) else { continue };
+                if let Some(id) = v.get("id").and_then(|x| x.as_str()).map(String::from) {
+                    if let Some(core) = flow_core_from_document(&v) {
+                        map.insert(id, StoredFlow { core, document: v });
+                    }
+                }
+            }
+            map
+        };
+
+        // segments
+        let segments: HashMap<String, Vec<StoredSegment>> = {
+            let col = db.collection::<Document>(COLL_SEGMENTS);
+            let cursor = col.find(doc! {}).await.map_err(to_store_err)?;
+            let docs: Vec<Document> = cursor.try_collect().await.map_err(to_store_err)?;
+            let mut map: HashMap<String, Vec<StoredSegment>> = HashMap::new();
+            for d in docs {
+                let Ok(v) = from_bson(d) else { continue };
+                let flow_id = match v.get("flow_id").and_then(|x| x.as_str()) {
+                    Some(f) => f.to_string(),
+                    None => continue,
+                };
+                let tr_str = match v.get("timerange").and_then(|x| x.as_str()) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                let timerange: TimeRange = match tr_str.parse() {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                let object_id = match v.get("object_id").and_then(|x| x.as_str()) {
+                    Some(o) => o.to_string(),
+                    None => continue,
+                };
+                map.entry(flow_id).or_default().push(StoredSegment {
+                    timerange,
+                    object_id,
+                    document: v,
+                });
+            }
+            map
+        };
+
+        // object_instances
+        let object_instances: HashMap<String, Vec<UncontrolledInstance>> = {
+            let col = db.collection::<Document>(COLL_INSTANCES);
+            let cursor = col.find(doc! {}).await.map_err(to_store_err)?;
+            let docs: Vec<Document> = cursor.try_collect().await.map_err(to_store_err)?;
+            let mut map = HashMap::new();
+            for d in docs {
+                let Ok(v) = from_bson(d) else { continue };
+                let object_id = match v.get("object_id").and_then(|x| x.as_str()).map(String::from) {
+                    Some(o) => o,
+                    None => continue,
+                };
+                if let Some(arr) = v.get("instances") {
+                    if let Ok(instances) = serde_json::from_value::<Vec<UncontrolledInstance>>(arr.clone()) {
+                        map.insert(object_id, instances);
+                    }
+                }
+            }
+            map
+        };
+
+        // webhooks
+        let webhooks: HashMap<String, StoredWebhook> = {
+            let col = db.collection::<Document>(COLL_WEBHOOKS);
+            let cursor = col.find(doc! {}).await.map_err(to_store_err)?;
+            let docs: Vec<Document> = cursor.try_collect().await.map_err(to_store_err)?;
+            let mut map = HashMap::new();
+            for d in docs {
+                let Ok(v) = from_bson(d) else { continue };
+                if let Ok(wh) = serde_json::from_value::<StoredWebhook>(v) {
+                    map.insert(wh.id.clone(), wh);
+                }
+            }
+            map
+        };
+
+        // deletion_requests
+        let deletion_requests: HashMap<String, DeletionRequest> = {
+            let col = db.collection::<Document>(COLL_DELETION_REQUESTS);
+            let cursor = col.find(doc! {}).await.map_err(to_store_err)?;
+            let docs: Vec<Document> = cursor.try_collect().await.map_err(to_store_err)?;
+            let mut map = HashMap::new();
+            for d in docs {
+                let Ok(v) = from_bson(d) else { continue };
+                if let Ok(dr) = serde_json::from_value::<DeletionRequest>(v) {
+                    map.insert(dr.id.clone(), dr);
+                }
+            }
+            map
+        };
+
+        // Event channel + S3 client --------------------------------------------
         let (event_sender, event_receiver) = tokio::sync::mpsc::unbounded_channel();
 
-        // Build S3 client for presigned URL generation
         let credentials =
             Credentials::new(&s3.access_key, &s3.secret_key, None, None, "tams-store");
         let s3_config = S3ConfigBuilder::new()
@@ -218,7 +334,7 @@ impl Store {
 
         let store = Store {
             inner: Arc::new(StoreInner {
-                data_dir: data_dir.to_path_buf(),
+                db,
                 service_info: RwLock::new(service_info),
                 storage_backends: vec![StorageBackend::default_s3(&s3.endpoint, &s3.bucket)],
                 sources: RwLock::new(sources),
@@ -226,7 +342,7 @@ impl Store {
                 segments: RwLock::new(segments),
                 object_instances: RwLock::new(object_instances),
                 webhooks: RwLock::new(webhooks),
-                deletion_requests: RwLock::new(HashMap::new()),
+                deletion_requests: RwLock::new(deletion_requests),
                 persist_sources: Mutex::new(()),
                 persist_flows: Mutex::new(()),
                 persist_instances: Mutex::new(()),
@@ -244,6 +360,29 @@ impl Store {
         tokio::spawn(event_dispatch_task(inner, event_receiver));
 
         Ok(store)
+    }
+
+    /// Collection helpers (private) -------------------------------------------
+    fn col_sources(&self) -> mongodb::Collection<Document> {
+        self.inner.db.collection(COLL_SOURCES)
+    }
+    fn col_flows(&self) -> mongodb::Collection<Document> {
+        self.inner.db.collection(COLL_FLOWS)
+    }
+    fn col_segments(&self) -> mongodb::Collection<Document> {
+        self.inner.db.collection(COLL_SEGMENTS)
+    }
+    fn col_instances(&self) -> mongodb::Collection<Document> {
+        self.inner.db.collection(COLL_INSTANCES)
+    }
+    fn col_webhooks(&self) -> mongodb::Collection<Document> {
+        self.inner.db.collection(COLL_WEBHOOKS)
+    }
+    fn col_service(&self) -> mongodb::Collection<Document> {
+        self.inner.db.collection(COLL_SERVICE)
+    }
+    fn col_deletion_requests(&self) -> mongodb::Collection<Document> {
+        self.inner.db.collection(COLL_DELETION_REQUESTS)
     }
 
     pub async fn get_service_info(&self) -> ServiceInfo {
@@ -2058,13 +2197,11 @@ impl Store {
 
         drop(segments);
 
-        // Remove segment metadata file
-        let path = self
-            .inner
-            .data_dir
-            .join(SEGMENTS_DIR)
-            .join(format!("{flow_id}.json"));
-        let _ = tokio::fs::remove_file(&path).await;
+        // Segments are now persisted in MongoDB — delete from collection
+        self.col_segments()
+            .delete_many(bson::doc! { "flow_id": flow_id })
+            .await
+            .map_err(to_store_err)?;
 
         // Media cleanup is handled by the S3 store independently.
         // We only clean up metadata here.
@@ -2177,73 +2314,125 @@ impl Store {
         Ok(())
     }
 
-    // -- Persistence --
+    // -- Persistence (MongoDB) --
 
     async fn persist_service_info(&self) -> std::io::Result<()> {
         let _guard = self.inner.persist_service.lock().await;
         let info = self.inner.service_info.read().await;
-        let path = self.inner.data_dir.join(SERVICE_FILE);
-        let json = serde_json::to_string_pretty(&*info).map_err(std::io::Error::other)?;
+        let val = serde_json::to_value(&*info).map_err(std::io::Error::other)?;
         drop(info);
-        atomic_write(&path, &json).await
+        let mut doc = to_bson(&val)?;
+        doc.insert("_id", "singleton");
+        self.col_service()
+            .replace_one(bson::doc! { "_id": "singleton" }, doc)
+            .upsert(true)
+            .await
+            .map(|_| ())
+            .map_err(mongo_io_err)
     }
 
     async fn persist_sources(&self) -> std::io::Result<()> {
         let _guard = self.inner.persist_sources.lock().await;
         let sources = self.inner.sources.read().await;
-        let path = self.inner.data_dir.join(SOURCES_FILE);
-        let json = serde_json::to_string_pretty(&*sources).map_err(std::io::Error::other)?;
-        drop(sources);
-        atomic_write(&path, &json).await
+        let col = self.col_sources();
+        for src in sources.values() {
+            let val = serde_json::to_value(src).map_err(std::io::Error::other)?;
+            let doc = to_bson(&val)?;
+            col.replace_one(bson::doc! { "id": &src.id }, doc)
+                .upsert(true)
+                .await
+                .map(|_| ())
+                .map_err(mongo_io_err)?;
+        }
+        Ok(())
     }
 
     async fn persist_flows(&self) -> std::io::Result<()> {
         let _guard = self.inner.persist_flows.lock().await;
         let flows = self.inner.flows.read().await;
-        // Persist as map of id → document (Value)
-        let docs: HashMap<&str, &serde_json::Value> = flows
-            .iter()
-            .map(|(id, sf)| (id.as_str(), &sf.document))
-            .collect();
-        let path = self.inner.data_dir.join(FLOWS_FILE);
-        let json = serde_json::to_string_pretty(&docs).map_err(std::io::Error::other)?;
-        drop(flows);
-        atomic_write(&path, &json).await
+        let col = self.col_flows();
+        for (id, sf) in flows.iter() {
+            let doc = to_bson(&sf.document)?;
+            col.replace_one(bson::doc! { "id": id.as_str() }, doc)
+                .upsert(true)
+                .await
+                .map(|_| ())
+                .map_err(mongo_io_err)?;
+        }
+        Ok(())
     }
 
     async fn persist_segments(&self, flow_id: &str) -> std::io::Result<()> {
         let _guard = self.inner.persist_segments.lock().await;
         let segments = self.inner.segments.read().await;
-        let path = self
-            .inner
-            .data_dir
-            .join(SEGMENTS_DIR)
-            .join(format!("{flow_id}.json"));
-        let docs: Vec<&serde_json::Value> = segments
-            .get(flow_id)
-            .map(|segs| segs.iter().map(|s| &s.document).collect())
-            .unwrap_or_default();
-        let json = serde_json::to_string_pretty(&docs).map_err(std::io::Error::other)?;
-        drop(segments);
-        atomic_write(&path, &json).await
+        let col = self.col_segments();
+        // Delete all segments for this flow then re-insert
+        col.delete_many(bson::doc! { "flow_id": flow_id })
+            .await
+            .map_err(mongo_io_err)?;
+        if let Some(segs) = segments.get(flow_id) {
+            for seg in segs {
+                let mut doc = to_bson(&seg.document)?;
+                doc.insert("flow_id", flow_id);
+                doc.insert("ts_start", seg.timerange.to_string());
+                col.insert_one(doc).await.map_err(mongo_io_err)?;
+            }
+        }
+        Ok(())
     }
 
     async fn persist_object_instances(&self) -> std::io::Result<()> {
         let _guard = self.inner.persist_instances.lock().await;
         let instances = self.inner.object_instances.read().await;
-        let path = self.inner.data_dir.join(INSTANCES_FILE);
-        let json = serde_json::to_string_pretty(&*instances).map_err(std::io::Error::other)?;
-        drop(instances);
-        atomic_write(&path, &json).await
+        let col = self.col_instances();
+        for (object_id, list) in instances.iter() {
+            let instances_val = serde_json::to_value(list).map_err(std::io::Error::other)?;
+            let doc = bson::doc! {
+                "object_id": object_id,
+                "instances": bson::to_bson(&instances_val).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?,
+            };
+            col.replace_one(bson::doc! { "object_id": object_id.as_str() }, doc)
+                .upsert(true)
+                .await
+                .map(|_| ())
+                .map_err(mongo_io_err)?;
+        }
+        Ok(())
     }
 
     async fn persist_webhooks(&self) -> std::io::Result<()> {
         let _guard = self.inner.persist_webhooks.lock().await;
         let webhooks = self.inner.webhooks.read().await;
-        let path = self.inner.data_dir.join(WEBHOOKS_FILE);
-        let json = serde_json::to_string_pretty(&*webhooks).map_err(std::io::Error::other)?;
-        drop(webhooks);
-        atomic_write(&path, &json).await
+        let col = self.col_webhooks();
+        for (id, wh) in webhooks.iter() {
+            let val = serde_json::to_value(wh).map_err(std::io::Error::other)?;
+            let doc = to_bson(&val)?;
+            col.replace_one(bson::doc! { "id": id.as_str() }, doc)
+                .upsert(true)
+                .await
+                .map(|_| ())
+                .map_err(mongo_io_err)?;
+        }
+        Ok(())
+    }
+
+    async fn persist_deletion_request(&self, dr: &DeletionRequest) -> std::io::Result<()> {
+        let val = serde_json::to_value(dr).map_err(std::io::Error::other)?;
+        let doc = to_bson(&val)?;
+        self.col_deletion_requests()
+            .replace_one(bson::doc! { "id": &dr.id }, doc)
+            .upsert(true)
+            .await
+            .map(|_| ())
+            .map_err(mongo_io_err)
+    }
+
+    async fn delete_deletion_request(&self, id: &str) -> std::io::Result<()> {
+        self.col_deletion_requests()
+            .delete_one(bson::doc! { "id": id })
+            .await
+            .map_err(mongo_io_err)?;
+        Ok(())
     }
 
     /// Test-only: inject a fake timerange on a flow to simulate having segments.
@@ -2649,18 +2838,6 @@ fn flow_core_from_document(doc: &serde_json::Value) -> Option<FlowCore> {
 
 /// Write content to a temporary file then atomically rename into place.
 /// Uses a unique temp filename to avoid races between concurrent writes.
-async fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
-    let unique = uuid::Uuid::new_v4();
-    let tmp = path.with_extension(format!("{unique}.tmp"));
-    tokio::fs::write(&tmp, content).await?;
-    match tokio::fs::rename(&tmp, path).await {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = tokio::fs::remove_file(&tmp).await;
-            Err(e)
-        }
-    }
-}
 
 #[cfg(any(test, feature = "test-utils"))]
 /// Bucket name used in test S3 config. Tests can assert URL contents against this.
@@ -2668,10 +2845,19 @@ pub const TEST_S3_BUCKET: &str = "tams-media";
 
 #[cfg(any(test, feature = "test-utils"))]
 impl Store {
-    /// Create a store with test S3 config. Used by all tests.
-    /// Points at a dummy endpoint; presigned URLs are structurally valid
-    /// but won't reach a real S3 backend in unit tests.
-    pub async fn new_test(data_dir: &Path) -> std::io::Result<Self> {
+    /// Create a store backed by a fresh MongoDB test database.
+    /// Requires a running MongoDB at `TAMS_TEST_MONGO_URI` or `mongodb://localhost:27017`.
+    /// Each call uses a unique DB name to isolate parallel tests.
+    pub async fn new_test() -> Result<Self, StoreError> {
+        let db_name = format!("tams_test_{}", uuid::Uuid::new_v4().simple());
+        Self::new_test_db(&db_name).await
+    }
+
+    /// Create a store connected to a named test DB (for persistence-across-restart tests).
+    pub async fn new_test_db(db_name: &str) -> Result<Self, StoreError> {
+        let base_uri = std::env::var("TAMS_TEST_MONGO_URI")
+            .unwrap_or_else(|_| "mongodb://localhost:27017".into());
+        let uri = format!("{}/{}", base_uri.trim_end_matches('/'), db_name);
         let s3 = S3Config {
             endpoint: "http://localhost:9000".into(),
             bucket: TEST_S3_BUCKET.into(),
@@ -2679,7 +2865,12 @@ impl Store {
             secret_key: "testsecret".into(),
             region: "us-east-1".into(),
         };
-        Self::new(data_dir, s3).await
+        Self::new(&uri, s3).await
+    }
+
+    /// Drop the test database (call in test teardown).
+    pub async fn drop_test_db(&self) {
+        let _ = self.inner.db.drop().await;
     }
 
     /// Create or replace a source. Test-only — production code uses
@@ -2766,26 +2957,20 @@ mod tests {
 
     #[tokio::test]
     async fn creates_data_directory() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let data_dir = tmp.path().join("subdir");
-        assert!(!data_dir.exists());
-        let _store = Store::new_test(&data_dir).await.unwrap();
-        assert!(data_dir.exists());
+        let _store = Store::new_test().await.unwrap();
     }
 
     #[tokio::test]
     async fn creates_service_json() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let _store = Store::new_test(tmp.path()).await.unwrap();
-        assert!(tmp.path().join("service.json").exists());
+        let _store = Store::new_test().await.unwrap();
+        // service data is now persisted in MongoDB
     }
 
     // ---- Service info ----
 
     #[tokio::test]
     async fn get_service_info_returns_defaults() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let info = store.get_service_info().await;
         assert_eq!(info.api_version, "8.0");
         assert_eq!(info.service_type, "urn:x-tams:service:rustytams");
@@ -2794,8 +2979,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_service_info_sets_name() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         store
             .update_service_info(ServicePost {
                 name: Some("Test".into()),
@@ -2809,9 +2993,9 @@ mod tests {
 
     #[tokio::test]
     async fn service_info_persists_across_restart() {
-        let tmp = tempfile::TempDir::new().unwrap();
+        let db = format!("tams_test_{}", uuid::Uuid::new_v4().simple());
         {
-            let store = Store::new_test(tmp.path()).await.unwrap();
+            let store = Store::new_test_db(&db).await.unwrap();
             store
                 .update_service_info(ServicePost {
                     name: Some("Custom Name".into()),
@@ -2820,15 +3004,15 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test_db(&db).await.unwrap();
         let info = store.get_service_info().await;
         assert_eq!(info.name.as_deref(), Some("Custom Name"));
+        store.drop_test_db().await;
     }
 
     #[tokio::test]
     async fn storage_backends_has_at_least_one() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         assert!(!store.storage_backends().is_empty());
     }
 
@@ -2836,8 +3020,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_and_get_source() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         store.create_source(test_source("src-1")).await.unwrap();
         let src = store.get_source("src-1").await;
         assert!(src.is_some());
@@ -2846,15 +3029,13 @@ mod tests {
 
     #[tokio::test]
     async fn get_nonexistent_source_returns_none() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         assert!(store.get_source("nope").await.is_none());
     }
 
     #[tokio::test]
     async fn list_sources_empty() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let sources = store
             .list_sources(&SourceFilters::default(), &TagFilters::default())
             .await;
@@ -2863,8 +3044,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_sources_returns_all() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         store.create_source(test_source("src-a")).await.unwrap();
         store.create_source(test_source("src-b")).await.unwrap();
         let sources = store
@@ -2875,8 +3055,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_sources_filters_by_format() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         store.create_source(test_source("src-v")).await.unwrap();
         let mut audio = test_source("src-a");
         audio.format = "urn:x-nmos:format:audio".into();
@@ -2898,8 +3077,7 @@ mod tests {
 
     #[tokio::test]
     async fn source_tag_crud() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         store.create_source(test_source("src-1")).await.unwrap();
 
         // Set tag
@@ -2921,8 +3099,7 @@ mod tests {
 
     #[tokio::test]
     async fn source_tag_on_nonexistent_returns_error() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let result = store
             .set_source_tag("nope", "k", TagValue::Single("v".into()))
             .await;
@@ -2931,8 +3108,7 @@ mod tests {
 
     #[tokio::test]
     async fn source_label_crud() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         store.create_source(test_source("src-1")).await.unwrap();
 
         assert_eq!(store.get_source_label("src-1").await, Some(None));
@@ -2950,8 +3126,7 @@ mod tests {
 
     #[tokio::test]
     async fn source_description_crud() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         store.create_source(test_source("src-1")).await.unwrap();
 
         store
@@ -2969,41 +3144,42 @@ mod tests {
     // ---- Sources: persistence ----
 
     #[tokio::test]
-    async fn sources_persist_to_disk() {
-        let tmp = tempfile::TempDir::new().unwrap();
+    async fn sources_persist_to_db() {
+        let db = format!("tams_test_{}", uuid::Uuid::new_v4().simple());
         {
-            let store = Store::new_test(tmp.path()).await.unwrap();
+            let store = Store::new_test_db(&db).await.unwrap();
             let mut src = test_source("src-persist");
             src.label = Some("Persisted".into());
             store.create_source(src).await.unwrap();
         }
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test_db(&db).await.unwrap();
         let src = store.get_source("src-persist").await.unwrap();
         assert_eq!(src.label.as_deref(), Some("Persisted"));
+        store.drop_test_db().await;
     }
 
     #[tokio::test]
-    async fn source_mutations_persist_to_disk() {
-        let tmp = tempfile::TempDir::new().unwrap();
+    async fn source_mutations_persist_to_db() {
+        let db = format!("tams_test_{}", uuid::Uuid::new_v4().simple());
         {
-            let store = Store::new_test(tmp.path()).await.unwrap();
+            let store = Store::new_test_db(&db).await.unwrap();
             store.create_source(test_source("src-mut")).await.unwrap();
             store
                 .set_source_label("src-mut", "Updated Label".into())
                 .await
                 .unwrap();
         }
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test_db(&db).await.unwrap();
         let src = store.get_source("src-mut").await.unwrap();
         assert_eq!(src.label.as_deref(), Some("Updated Label"));
+        store.drop_test_db().await;
     }
 
     // ---- Flows: CRUD ----
 
     #[tokio::test]
     async fn put_flow_creates_new() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let (created, doc) = store.put_flow(data_flow("f1", "s1")).await.unwrap();
         assert!(created);
         assert!(doc.is_some());
@@ -3015,8 +3191,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_flow_updates_existing() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         store.put_flow(data_flow("f1", "s1")).await.unwrap();
 
         let mut updated = data_flow("f1", "s1");
@@ -3031,23 +3206,20 @@ mod tests {
 
     #[tokio::test]
     async fn put_flow_auto_creates_source() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         store.put_flow(data_flow("f1", "auto-src")).await.unwrap();
         assert!(store.get_source("auto-src").await.is_some());
     }
 
     #[tokio::test]
     async fn get_nonexistent_flow_returns_none() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         assert!(store.get_flow("nope").await.is_none());
     }
 
     #[tokio::test]
     async fn delete_flow_no_segments_returns_removed() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         store.put_flow(data_flow("f1", "s1")).await.unwrap();
         let result = store.delete_flow("f1").await.unwrap();
         assert!(matches!(result, DeleteResult::Deleted));
@@ -3056,8 +3228,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_nonexistent_flow_returns_not_found() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let result = store.delete_flow("nope").await.unwrap();
         assert!(matches!(result, DeleteResult::NotFound));
     }
@@ -3066,8 +3237,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_flow_rejects_missing_id() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let result = store
             .put_flow(serde_json::json!({"source_id": "s1", "format": "urn:x-nmos:format:data"}))
             .await;
@@ -3076,8 +3246,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_flow_rejects_missing_source_id() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let result = store
             .put_flow(serde_json::json!({"id": "f1", "format": "urn:x-nmos:format:data"}))
             .await;
@@ -3086,8 +3255,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_flow_rejects_invalid_format() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let result = store
             .put_flow(serde_json::json!({"id": "f1", "source_id": "s1", "format": "bad"}))
             .await;
@@ -3096,8 +3264,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_video_flow_rejects_missing_codec() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let result = store
             .put_flow(serde_json::json!({
                 "id": "f1",
@@ -3111,8 +3278,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_video_flow_rejects_missing_essence_params() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let result = store
             .put_flow(serde_json::json!({
                 "id": "f1",
@@ -3128,8 +3294,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_only_flow_rejects_update() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         store.put_flow(data_flow("f1", "s1")).await.unwrap();
         store.set_flow_read_only("f1", true).await.unwrap();
 
@@ -3141,8 +3306,7 @@ mod tests {
 
     #[tokio::test]
     async fn flow_tag_crud() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         store.put_flow(data_flow("f1", "s1")).await.unwrap();
 
         store
@@ -3158,8 +3322,7 @@ mod tests {
 
     #[tokio::test]
     async fn flow_label_property() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         store.put_flow(data_flow("f1", "s1")).await.unwrap();
 
         store
@@ -3177,11 +3340,11 @@ mod tests {
     // ---- Flows: persistence ----
 
     #[tokio::test]
-    async fn flows_persist_to_disk() {
-        let tmp = tempfile::TempDir::new().unwrap();
+    async fn flows_persist_to_db() {
+        let db = format!("tams_test_{}", uuid::Uuid::new_v4().simple());
         let flow_id = "f0000000-0000-0000-0000-000000000001";
         {
-            let store = Store::new_test(tmp.path()).await.unwrap();
+            let store = Store::new_test_db(&db).await.unwrap();
             store
                 .put_flow(serde_json::json!({
                     "id": flow_id,
@@ -3192,46 +3355,49 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test_db(&db).await.unwrap();
         let flow = store.get_flow(flow_id).await;
         assert!(flow.is_some(), "Flow should survive restart");
         assert_eq!(flow.unwrap()["label"], "Persisted Flow");
+        store.drop_test_db().await;
     }
 
     #[tokio::test]
-    async fn flow_deletion_persists_to_disk() {
-        let tmp = tempfile::TempDir::new().unwrap();
+    async fn flow_deletion_persists_to_db() {
+        let db = format!("tams_test_{}", uuid::Uuid::new_v4().simple());
         let flow_id = "f0000000-0000-0000-0000-000000000002";
         {
-            let store = Store::new_test(tmp.path()).await.unwrap();
+            let store = Store::new_test_db(&db).await.unwrap();
             store.put_flow(data_flow(flow_id, "s1")).await.unwrap();
             store.delete_flow(flow_id).await.unwrap();
         }
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test_db(&db).await.unwrap();
         assert!(store.get_flow(flow_id).await.is_none());
+        store.drop_test_db().await;
     }
 
     #[tokio::test]
     async fn auto_created_source_persists_from_flow() {
-        let tmp = tempfile::TempDir::new().unwrap();
+        let db = format!("tams_test_{}", uuid::Uuid::new_v4().simple());
         let source_id = "s-auto-persist";
         {
-            let store = Store::new_test(tmp.path()).await.unwrap();
+            let store = Store::new_test_db(&db).await.unwrap();
             store
                 .put_flow(data_flow("f-auto", source_id))
                 .await
                 .unwrap();
         }
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test_db(&db).await.unwrap();
         assert!(store.get_source(source_id).await.is_some());
+        store.drop_test_db().await;
     }
 
     #[tokio::test]
     async fn flow_with_all_fields_persists() {
-        let tmp = tempfile::TempDir::new().unwrap();
+        let db = format!("tams_test_{}", uuid::Uuid::new_v4().simple());
         let flow_id = "f-full";
         {
-            let store = Store::new_test(tmp.path()).await.unwrap();
+            let store = Store::new_test_db(&db).await.unwrap();
             store
                 .put_flow(serde_json::json!({
                     "id": flow_id,
@@ -3253,7 +3419,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test_db(&db).await.unwrap();
         let flow = store.get_flow(flow_id).await.unwrap();
         assert_eq!(flow["label"], "Full Flow");
         assert_eq!(flow["codec"], "video/h264");
@@ -3261,14 +3427,14 @@ mod tests {
         assert_eq!(flow["tags"]["genre"], "news");
         assert!(flow["created"].is_string());
         assert!(flow["metadata_updated"].is_string());
+        store.drop_test_db().await;
     }
 
     // ---- Segments ----
 
     #[tokio::test]
     async fn post_and_get_segments() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         store.put_flow(video_flow("f1", "s1")).await.unwrap();
 
         let result = store
@@ -3290,8 +3456,7 @@ mod tests {
 
     #[tokio::test]
     async fn post_segments_rejects_overlap() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         store.put_flow(video_flow("f1", "s1")).await.unwrap();
 
         store
@@ -3320,8 +3485,7 @@ mod tests {
 
     #[tokio::test]
     async fn post_segments_on_nonexistent_flow_fails() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let result = store
             .post_segments(
                 "nope",
@@ -3338,8 +3502,7 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_create_and_get() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let wh = test_webhook("http://example.com/hook", vec!["flows/created"]);
         let created = store.create_webhook(wh).await.unwrap();
         assert!(!created.id.is_empty());
@@ -3351,16 +3514,14 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_list_empty() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let list = store.list_webhooks(&TagFilters::default()).await;
         assert!(list.is_empty());
     }
 
     #[tokio::test]
     async fn webhook_delete() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let wh = store
             .create_webhook(test_webhook("http://example.com", vec!["flows/created"]))
             .await
@@ -3374,16 +3535,14 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_delete_nonexistent_fails() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let result = store.delete_webhook("nope").await;
         assert!(matches!(result, Err(StoreError::NotFound(_))));
     }
 
     #[tokio::test]
     async fn webhook_update_status_transition() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let wh = store
             .create_webhook(test_webhook("http://example.com", vec!["flows/created"]))
             .await
@@ -3404,8 +3563,7 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_invalid_status_transition_rejected() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let wh = store
             .create_webhook(test_webhook("http://example.com", vec!["flows/created"]))
             .await
@@ -3420,8 +3578,7 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_update_preserves_api_key() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let mut wh = test_webhook("http://example.com", vec!["flows/created"]);
         wh.api_key_name = Some("X-Api-Key".into());
         wh.api_key_value = Some("secret".into());
@@ -3471,8 +3628,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_flow_rejects_path_traversal_id() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let store = Store::new_test(tmp.path()).await.unwrap();
+        let store = Store::new_test().await.unwrap();
         let flow = serde_json::json!({
             "id": "../../../tmp/evil",
             "source_id": "src-1",
