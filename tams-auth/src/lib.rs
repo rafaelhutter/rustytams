@@ -5,9 +5,36 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+// Kept for backwards compatibility in tests
 pub const BASIC_USER: &str = "test";
 pub const BASIC_PASS: &str = "password";
 pub const API_KEY: &str = "test-api-key";
+
+/// Runtime-configurable credentials store.
+#[derive(Clone, Debug)]
+pub struct Credentials {
+    pub username: String,
+    pub password: String,
+}
+
+impl Default for Credentials {
+    fn default() -> Self {
+        Self {
+            username: BASIC_USER.to_string(),
+            password: BASIC_PASS.to_string(),
+        }
+    }
+}
+
+impl Credentials {
+    pub fn new(username: impl Into<String>, password: impl Into<String>) -> Self {
+        Self { username: username.into(), password: password.into() }
+    }
+
+    pub fn check(&self, user: &str, pass: &str) -> bool {
+        self.username == user && self.password == pass
+    }
+}
 
 // -- Token store --
 
@@ -110,7 +137,8 @@ pub async fn authenticate(req: &AuthRequest, token_store: &TokenStore) -> Result
     }
 }
 
-/// Check if basic credentials are valid.
+/// Check if basic credentials are valid against the hardcoded test defaults.
+/// Use `Credentials::check` for runtime-configurable credentials.
 pub fn check_basic_credentials(user: &str, pass: &str) -> bool {
     user == BASIC_USER && pass == BASIC_PASS
 }

@@ -7,7 +7,7 @@ use salvo::http::StatusCode;
 use salvo::prelude::*;
 
 use tams_auth::{
-    authenticate, check_basic_credentials, decode_basic_auth, AuthRequest, TokenStore,
+    authenticate, decode_basic_auth, AuthRequest, Credentials, TokenStore,
 };
 
 /// POST /auth/check
@@ -50,13 +50,16 @@ async fn check_auth(req: &mut Request, depot: &mut Depot, res: &mut Response) {
 #[handler]
 async fn issue_token(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     // Validate Basic auth
+    let credentials = depot
+        .obtain::<Credentials>()
+        .expect("Credentials not in depot");
     let authed = req
         .headers()
         .get("authorization")
         .and_then(|h| h.to_str().ok())
         .and_then(|s| s.strip_prefix("Basic "))
         .and_then(decode_basic_auth)
-        .is_some_and(|(user, pass)| check_basic_credentials(&user, &pass));
+        .is_some_and(|(user, pass)| credentials.check(&user, &pass));
 
     if !authed {
         res.status_code(StatusCode::UNAUTHORIZED);
@@ -88,15 +91,16 @@ async fn issue_token(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     })));
 }
 
-pub fn build_router(token_store: TokenStore) -> Router {
+pub fn build_router(token_store: TokenStore, credentials: Credentials) -> Router {
     Router::new()
         .hoop(salvo::affix_state::inject(token_store))
+        .hoop(salvo::affix_state::inject(credentials))
         .push(Router::with_path("auth/check").post(check_auth))
         .push(Router::with_path("auth/token").post(issue_token))
 }
 
-pub fn build_service(token_store: TokenStore) -> Service {
-    Service::new(build_router(token_store))
+pub fn build_service(token_store: TokenStore, credentials: Credentials) -> Service {
+    Service::new(build_router(token_store, credentials))
 }
 
 #[cfg(test)]
@@ -104,13 +108,13 @@ mod tests {
     use salvo::http::StatusCode;
     use salvo::test::{ResponseExt, TestClient};
 
-    use tams_auth::TokenStore;
+    use tams_auth::{Credentials, TokenStore};
 
     use super::build_service;
 
     #[tokio::test]
     async fn check_basic_valid() {
-        let service = build_service(TokenStore::new());
+        let service = build_service(TokenStore::new(), Credentials::default());
         let mut resp = TestClient::post("http://localhost/auth/check")
             .json(&serde_json::json!({"auth_type": "Basic", "user": "test", "pass": "password"}))
             .send(&service)
@@ -122,7 +126,7 @@ mod tests {
 
     #[tokio::test]
     async fn check_basic_invalid() {
-        let service = build_service(TokenStore::new());
+        let service = build_service(TokenStore::new(), Credentials::default());
         let resp = TestClient::post("http://localhost/auth/check")
             .json(&serde_json::json!({"auth_type": "Basic", "user": "wrong", "pass": "creds"}))
             .send(&service)
@@ -132,7 +136,7 @@ mod tests {
 
     #[tokio::test]
     async fn check_api_key_valid() {
-        let service = build_service(TokenStore::new());
+        let service = build_service(TokenStore::new(), Credentials::default());
         let resp = TestClient::post("http://localhost/auth/check")
             .json(&serde_json::json!({"auth_type": "ApiKey", "key": "test-api-key"}))
             .send(&service)
@@ -142,7 +146,7 @@ mod tests {
 
     #[tokio::test]
     async fn check_api_key_invalid() {
-        let service = build_service(TokenStore::new());
+        let service = build_service(TokenStore::new(), Credentials::default());
         let resp = TestClient::post("http://localhost/auth/check")
             .json(&serde_json::json!({"auth_type": "ApiKey", "key": "wrong"}))
             .send(&service)
@@ -154,7 +158,7 @@ mod tests {
     async fn check_bearer_valid() {
         let ts = TokenStore::new();
         let (token, _) = ts.issue().await;
-        let service = build_service(ts);
+        let service = build_service(ts, Credentials::default());
         let resp = TestClient::post("http://localhost/auth/check")
             .json(&serde_json::json!({"auth_type": "Bearer", "token": token}))
             .send(&service)
@@ -164,7 +168,7 @@ mod tests {
 
     #[tokio::test]
     async fn check_bearer_invalid() {
-        let service = build_service(TokenStore::new());
+        let service = build_service(TokenStore::new(), Credentials::default());
         let resp = TestClient::post("http://localhost/auth/check")
             .json(&serde_json::json!({"auth_type": "Bearer", "token": "garbage"}))
             .send(&service)
@@ -176,7 +180,7 @@ mod tests {
     async fn check_bearer_expired() {
         let ts = TokenStore::new();
         let token = ts.issue_expired().await;
-        let service = build_service(ts);
+        let service = build_service(ts, Credentials::default());
         let resp = TestClient::post("http://localhost/auth/check")
             .json(&serde_json::json!({"auth_type": "Bearer", "token": token}))
             .send(&service)
@@ -186,7 +190,7 @@ mod tests {
 
     #[tokio::test]
     async fn check_bad_json() {
-        let service = build_service(TokenStore::new());
+        let service = build_service(TokenStore::new(), Credentials::default());
         let resp = TestClient::post("http://localhost/auth/check")
             .json(&serde_json::json!({"nonsense": true}))
             .send(&service)
@@ -196,7 +200,7 @@ mod tests {
 
     #[tokio::test]
     async fn token_issue_valid() {
-        let service = build_service(TokenStore::new());
+        let service = build_service(TokenStore::new(), Credentials::default());
         let mut resp = TestClient::post("http://localhost/auth/token")
             .basic_auth("test", Some("password"))
             .raw_form("grant_type=client_credentials")
@@ -211,7 +215,7 @@ mod tests {
 
     #[tokio::test]
     async fn token_issue_wrong_creds() {
-        let service = build_service(TokenStore::new());
+        let service = build_service(TokenStore::new(), Credentials::default());
         let resp = TestClient::post("http://localhost/auth/token")
             .basic_auth("wrong", Some("creds"))
             .raw_form("grant_type=client_credentials")
@@ -222,7 +226,7 @@ mod tests {
 
     #[tokio::test]
     async fn token_issue_wrong_grant_type() {
-        let service = build_service(TokenStore::new());
+        let service = build_service(TokenStore::new(), Credentials::default());
         let resp = TestClient::post("http://localhost/auth/token")
             .basic_auth("test", Some("password"))
             .raw_form("grant_type=authorization_code")
@@ -233,7 +237,7 @@ mod tests {
 
     #[tokio::test]
     async fn token_issue_no_auth() {
-        let service = build_service(TokenStore::new());
+        let service = build_service(TokenStore::new(), Credentials::default());
         let resp = TestClient::post("http://localhost/auth/token")
             .raw_form("grant_type=client_credentials")
             .send(&service)
@@ -244,7 +248,7 @@ mod tests {
     #[tokio::test]
     async fn issued_token_validates() {
         let ts = TokenStore::new();
-        let service = build_service(ts.clone());
+        let service = build_service(ts.clone(), Credentials::default());
 
         // Issue token
         let mut resp = TestClient::post("http://localhost/auth/token")

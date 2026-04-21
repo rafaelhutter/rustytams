@@ -51,7 +51,7 @@ async fn start_auth_server(token_store: TokenStore) -> u16 {
         listener.local_addr().unwrap().port()
     };
 
-    let service = tams_auth_server::build_service(token_store);
+    let service = tams_auth_server::build_service(token_store, tams_auth::Credentials::default());
     let acceptor = salvo::prelude::TcpListener::new(format!("127.0.0.1:{free_port}"))
         .bind()
         .await;
