@@ -1,0 +1,69 @@
+# =============================================================================
+# TAMS Helm Chart – Default Values
+# =============================================================================
+
+# -- Image-Konfiguration ------------------------------------------------------
+image:
+  registry: docker.io
+  repository: moovit
+  tag: "58b1fe9"
+  pullPolicy: IfNotPresent
+
+# -- Namespace ----------------------------------------------------------------
+namespace: tams
+
+# -- Replicas -----------------------------------------------------------------
+replicaCount:
+  server: 1
+  auth: 1
+
+# -- Backblaze B2 Object Storage ----------------------------------------------
+b2:
+  endpoint: "" # z.B. s3.eu-central-003.backblazeb2.com
+  region: "" # z.B. eu-central-003
+  bucket: "" # z.B. tams-media
+  accessKey: ""
+  secretKey: ""
+
+# -- TAMS API Credentials -----------------------------------------------------
+tams:
+  username: "admin"
+  password: "" # Pflichtfeld
+
+# -- Ingress / TLS (Let's Encrypt) --------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  host: "" # z.B. tams.example.com
+  tls:
+    enabled: true
+    certManager:
+      clusterIssuer: letsencrypt-prod # oder letsencrypt-staging
+
+# -- Resource Limits ----------------------------------------------------------
+resources:
+  server:
+    requests:
+      cpu: "200m"
+      memory: "128Mi"
+    limits:
+      cpu: "1000m"
+      memory: "512Mi"
+  auth:
+    requests:
+      cpu: "100m"
+      memory: "64Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+# -- cert-manager ClusterIssuers ----------------------------------------------
+# Auf false setzen wenn letsencrypt-prod/staging bereits im Cluster existieren
+nodeAffinity:
+  excludeHostname: "hc-k8s-cluster-node-1"
+
+# -- cert-manager ClusterIssuers ----------------------------------------------
+# Auf false setzen wenn letsencrypt-prod/staging bereits im Cluster existieren
+certManager:
+  createClusterIssuers: false
+  email: ""

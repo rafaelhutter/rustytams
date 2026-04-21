@@ -1,0 +1,23 @@
+# Produktions-Overrides – Secrets werden per --set oder separater values-secret.yaml gesetzt
+image:
+  tag: "58b1fe9"
+
+ingress:
+  host: tams.moovit24.de
+  tls:
+    enabled: true
+    certManager:
+      clusterIssuer: letsencrypt-prod
+
+b2:
+  endpoint: s3.eu-central-003.backblazeb2.com
+  region: eu-central-003
+  bucket: tams-media
+  # accessKey und secretKey per --set oder values-secret.yaml
+
+tams:
+  username: admin
+  # password per --set oder values-secret.yaml
+
+nodeAffinity:
+  excludeHostname: "hc-k8s-cluster-node-1"

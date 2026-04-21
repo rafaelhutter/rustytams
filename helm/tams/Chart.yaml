@@ -1,0 +1,13 @@
+apiVersion: v2
+name: tams
+description: Time-Addressable Media Store (RustyTAMS) – Helm Chart
+type: application
+version: 0.1.0
+appVersion: "latest"
+keywords:
+  - tams
+  - media
+  - s3
+home: https://github.com/rafaelhutter/rustytams
+maintainers:
+  - name: moovit

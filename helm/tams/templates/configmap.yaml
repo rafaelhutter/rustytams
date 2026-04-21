@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tams-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "tams.name" . }}
+data:
+  TAMS_HOSTNAME: {{ .Values.ingress.host | quote }}
+  AUTH_URL: "http://tams-auth:5802"

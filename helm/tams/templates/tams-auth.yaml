@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tams-auth
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: tams-auth
+    app.kubernetes.io/name: {{ include "tams.name" . }}
+spec:
+  replicas: {{ .Values.replicaCount.auth }}
+  selector:
+    matchLabels:
+      app: tams-auth
+  template:
+    metadata:
+      labels:
+        app: tams-auth
+    spec:
+      {{ include "tams.nodeAffinity" . | indent 6 | trim }}
+      containers:
+        - name: tams-auth
+          image: {{ include "tams.authImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 5802
+          envFrom:
+            - secretRef:
+                name: tams-credentials
+          resources: {{ toYaml .Values.resources.auth | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: 5802
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 5802
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tams-auth
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "tams.name" . }}
+spec:
+  selector:
+    app: tams-auth
+  ports:
+    - port: 5802
+      targetPort: 5802
