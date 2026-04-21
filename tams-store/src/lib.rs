@@ -15,7 +15,8 @@ use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::Client as S3Client;
 
 use tams_types::error::{DeletionRequest, DeletionStatus};
-use tams_types::flow::{DeleteResult, FlowCore, FlowFilters, StoredFlow};
+use tams_types::flow::{FlowCore, FlowFilters, StoredFlow};
+pub use tams_types::flow::DeleteResult;
 use tams_types::object::{
     InstanceRequest, InstanceSelector, ObjectInfo, ObjectQuery, UncontrolledInstance,
 };
@@ -576,6 +577,48 @@ impl Store {
     /// Delete source description.
     pub async fn delete_source_description(&self, id: &str) -> Result<(), StoreError> {
         self.mutate_source(id, |s| s.description = None).await
+    }
+
+    /// DELETE /sources/{sourceId} -- remove a source and all its flows.
+    pub async fn delete_source(&self, id: &str) -> Result<DeleteResult, StoreError> {
+        // Collect flow IDs belonging to this source before removing anything
+        let flow_ids: Vec<String> = {
+            let flows = self.inner.flows.read().await;
+            flows
+                .iter()
+                .filter(|(_, sf)| sf.core.source_id == id)
+                .map(|(flow_id, _)| flow_id.clone())
+                .collect()
+        };
+
+        // Delete each flow (handles segments + webhook events)
+        for flow_id in &flow_ids {
+            self.delete_flow(flow_id).await?;
+        }
+
+        // Remove the source itself from memory
+        let source_cb = self.source_collected_by(id).await;
+        {
+            let mut sources = self.inner.sources.write().await;
+            if sources.remove(id).is_none() {
+                return Ok(DeleteResult::NotFound);
+            }
+        }
+
+        // Remove from MongoDB
+        self.col_sources()
+            .delete_one(bson::doc! { "id": id })
+            .await
+            .map_err(mongo_io_err)
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+
+        // Dispatch webhook event
+        self.dispatch_event(StoreEvent::SourceDeleted {
+            source_id: id.to_string(),
+            source_collected_by: source_cb,
+        });
+
+        Ok(DeleteResult::Deleted)
     }
 
     // -- Flows --

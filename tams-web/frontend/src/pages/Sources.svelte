@@ -1,19 +1,39 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { errorMessage } from '../lib/errors.js';
-  import { apiGet, parsePagination, formatShortName } from '../lib/api.js';
+  import { apiGet, apiDelete, parsePagination, formatShortName } from '../lib/api.js';
   import { createFlowWithSource, FORMAT_VIDEO, FORMAT_OPTIONS } from '../lib/ingest.js';
   import { link, getHashParams, setHashParams } from '../lib/router.js';
   import { buildSourcesQuery } from '../lib/query.js';
   import { addToast } from '../lib/toast.js';
   import Pagination from '../components/Pagination.svelte';
   import Spinner from '../components/Spinner.svelte';
+  import ConfirmDialog from '../components/ConfirmDialog.svelte';
   import type { PaginationInfo } from '../types/tams.js';
 
   let sources: any[] = $state([]);
   let error: string | null = $state(null);
   let loading: boolean = $state(true);
   let pagination: PaginationInfo = $state({ limit: null, nextKey: null, count: null, timerange: null });
+
+  // Delete confirmation
+  let deleteTarget: { id: string; label: string } | null = $state(null);
+  let deleting: boolean = $state(false);
+
+  async function confirmDelete(): Promise<void> {
+    if (!deleteTarget) return;
+    deleting = true;
+    try {
+      await apiDelete(`/sources/${deleteTarget.id}`);
+      addToast(`Source "${deleteTarget.label || deleteTarget.id}" deleted`, 'success');
+      deleteTarget = null;
+      fetchSources();
+    } catch (e) {
+      addToast(`Delete failed: ${errorMessage(e)}`, 'error');
+    } finally {
+      deleting = false;
+    }
+  }
 
   // Filters
   let filterLabel: string = $state('');
@@ -193,6 +213,7 @@
           <th>ID</th>
           <th>Format</th>
           <th>Description</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
@@ -202,6 +223,9 @@
             <td class="mono">{src.id.slice(0, 8)}</td>
             <td><span class="badge">{formatShortName(src.format)}</span></td>
             <td class="muted">{src.description || '--'}</td>
+            <td>
+              <button class="btn-danger-sm" onclick={() => deleteTarget = { id: src.id, label: src.label || '' }} title="Delete source">✕</button>
+            </td>
           </tr>
         {/each}
       </tbody>
@@ -216,6 +240,17 @@
   {/if}
 </div>
 
+{#if deleteTarget}
+  <ConfirmDialog
+    title="Delete Source"
+    message="Delete source &quot;{deleteTarget.label || deleteTarget.id}&quot; and all its flows? This cannot be undone."
+    confirmLabel={deleting ? 'Deleting...' : 'Delete'}
+    disabled={deleting}
+    onConfirm={confirmDelete}
+    onCancel={() => deleteTarget = null}
+  />
+{/if}
+
 <style>
   .create-form {
     display: flex;
@@ -227,5 +262,19 @@
     display: flex;
     flex-direction: column;
     gap: 0.2em;
+  }
+  :global(.btn-danger-sm) {
+    background: transparent;
+    border: 1px solid var(--error, #c0392b);
+    color: var(--error, #c0392b);
+    border-radius: 4px;
+    padding: 0.15em 0.45em;
+    font-size: 0.8em;
+    cursor: pointer;
+    line-height: 1.2;
+  }
+  :global(.btn-danger-sm:hover) {
+    background: var(--error, #c0392b);
+    color: #fff;
   }
 </style>

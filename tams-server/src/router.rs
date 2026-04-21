@@ -117,7 +117,8 @@ fn build_router(store: Store, auth_client: AuthClient) -> Router {
                 .push(
                     Router::with_path("sources/{sourceId}")
                         .get(handlers::sources::get_source)
-                        .head(handlers::sources::get_source),
+                        .head(handlers::sources::get_source)
+                        .delete(handlers::sources::delete_source),
                 )
                 .push(
                     Router::with_path("sources/{sourceId}/tags")

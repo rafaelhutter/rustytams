@@ -101,6 +101,10 @@ pub enum StoreEvent {
         source: serde_json::Value,
         source_collected_by: Vec<String>,
     },
+    SourceDeleted {
+        source_id: String,
+        source_collected_by: Vec<String>,
+    },
 }
 
 impl StoreEvent {
@@ -114,6 +118,7 @@ impl StoreEvent {
             StoreEvent::SegmentsDeleted { .. } => "flows/segments_deleted",
             StoreEvent::SourceCreated { .. } => "sources/created",
             StoreEvent::SourceUpdated { .. } => "sources/updated",
+            StoreEvent::SourceDeleted { .. } => "sources/deleted",
         }
     }
 
@@ -131,6 +136,7 @@ impl StoreEvent {
             } => serde_json::json!({ "flow_id": flow_id, "timerange": timerange }),
             StoreEvent::SourceCreated { source, .. } => serde_json::json!({ "source": source }),
             StoreEvent::SourceUpdated { source, .. } => serde_json::json!({ "source": source }),
+            StoreEvent::SourceDeleted { source_id, .. } => serde_json::json!({ "source_id": source_id }),
         };
         serde_json::json!({
             "event_timestamp": chrono::Utc::now().to_rfc3339(),
@@ -163,6 +169,7 @@ impl StoreEvent {
             StoreEvent::SourceCreated { source, .. } | StoreEvent::SourceUpdated { source, .. } => {
                 source.get("id").and_then(|v| v.as_str())
             }
+            StoreEvent::SourceDeleted { source_id, .. } => Some(source_id),
         }
     }
 
@@ -216,6 +223,10 @@ impl StoreEvent {
                 ..
             }
             | StoreEvent::SourceUpdated {
+                source_collected_by,
+                ..
+            }
+            | StoreEvent::SourceDeleted {
                 source_collected_by,
                 ..
             } => source_collected_by,

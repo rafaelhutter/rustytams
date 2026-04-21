@@ -6,6 +6,7 @@ use crate::extract::tag_filters_from_request;
 use crate::extract::{paginate_and_set_headers, pagination_from_request};
 use crate::handlers::{get_store, parse_json, tag_name};
 use tams_types::source::SourceFilters;
+use tams_store::DeleteResult;
 
 fn source_id(req: &Request) -> String {
     req.param::<String>("sourceId")
@@ -182,6 +183,23 @@ pub async fn delete_source_description(req: &mut Request, depot: &mut Depot, res
         Ok(()) => {
             res.status_code(StatusCode::NO_CONTENT);
         }
+        Err(e) => AppError::from(e).write_to(res),
+    }
+}
+
+/// DELETE /sources/{sourceId} -- delete a source and all its flows.
+#[handler]
+pub async fn delete_source(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    let store = get_store(depot);
+    let id = source_id(req);
+    match store.delete_source(&id).await {
+        Ok(DeleteResult::Deleted) => {
+            res.status_code(StatusCode::NO_CONTENT);
+        }
+        Ok(DeleteResult::NotFound) => {
+            AppError::not_found(format!("Source {id} not found")).write_to(res);
+        }
+        Ok(DeleteResult::Async(_)) => unreachable!("delete_source never returns Async"),
         Err(e) => AppError::from(e).write_to(res),
     }
 }
