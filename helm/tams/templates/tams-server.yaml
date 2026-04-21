@@ -17,12 +17,26 @@ spec:
         app: tams-server
     spec:
       {{ include "tams.nodeAffinity" . | indent 6 | trim }}
+      initContainers:
+        - name: fix-data-permissions
+          image: busybox:1.36
+          command: ["sh", "-c", "chmod -R 777 /data"]
+          volumeMounts:
+            - name: tams-data
+              mountPath: /data
+      volumes:
+        - name: tams-data
+          persistentVolumeClaim:
+            claimName: tams-server-data
       containers:
         - name: tams-server
           image: {{ include "tams.serverImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 5800
+          volumeMounts:
+            - name: tams-data
+              mountPath: /data
           envFrom:
             - secretRef:
                 name: tams-b2-credentials

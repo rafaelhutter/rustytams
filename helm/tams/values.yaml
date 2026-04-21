@@ -65,8 +65,12 @@ resources:
       cpu: "200m"
       memory: "128Mi"
 
-# -- cert-manager ClusterIssuers ----------------------------------------------
-# Auf false setzen wenn letsencrypt-prod/staging bereits im Cluster existieren
+# -- Persistenz (PVC für /data) -----------------------------------------------
+persistence:
+  storageClass: longhorn
+  size: 1Gi
+
+# -- Node Affinity ------------------------------------------------------------
 nodeAffinity:
   excludeHostname: "hc-k8s-cluster-node-1"
 
