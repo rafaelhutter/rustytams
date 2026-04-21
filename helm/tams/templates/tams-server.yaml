@@ -26,10 +26,10 @@ spec:
             - |
               until mongosh mongodb.{{ .Values.namespace }}.svc.cluster.local:27017/admin \
                 --eval "db.adminCommand('ping')" --quiet 2>/dev/null; do
-                echo "Warte auf MongoDB..."
+                echo "Waiting for MongoDB..."
                 sleep 2
               done
-              echo "MongoDB ist bereit."
+              echo "MongoDB is ready."
       containers:
         - name: tams-server
           image: {{ include "tams.serverImage" . }}

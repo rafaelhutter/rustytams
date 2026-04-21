@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-# Cargo-Manifest zuerst kopieren für optimales Layer-Caching
+# Copy Cargo manifests first for optimal layer caching
 COPY Cargo.toml Cargo.lock ./
 COPY tams-types/Cargo.toml ./tams-types/
 COPY tams-store/Cargo.toml ./tams-store/
@@ -22,7 +22,7 @@ COPY tams-auth/Cargo.toml ./tams-auth/
 COPY tams-server/Cargo.toml ./tams-server/
 COPY tams-auth-server/Cargo.toml ./tams-auth-server/
 
-# Dummy-Sourcen für Dependency-Caching erstellen
+# Create dummy sources for dependency caching
 RUN mkdir -p tams-types/src tams-store/src tams-auth/src tams-server/src tams-auth-server/src && \
     echo "pub fn dummy() {}" > tams-types/src/lib.rs && \
     echo "pub fn dummy() {}" > tams-store/src/lib.rs && \
@@ -30,19 +30,19 @@ RUN mkdir -p tams-types/src tams-store/src tams-auth/src tams-server/src tams-au
     echo "fn main() {}" > tams-server/src/main.rs && \
     echo "fn main() {}" > tams-auth-server/src/main.rs
 
-# Abhängigkeiten vorab kompilieren (Caching)
+# Pre-compile dependencies (caching)
 RUN cargo build --release --bin tams-auth-server 2>/dev/null || true
 
-# Echten Source-Code kopieren
+# Copy real source code
 COPY tams-types/src ./tams-types/src
 COPY tams-store/src ./tams-store/src
 COPY tams-auth/src ./tams-auth/src
 COPY tams-auth-server/src ./tams-auth-server/src
 
-# Timestamps aktualisieren damit Cargo neu baut
+# Touch sources so Cargo rebuilds them
 RUN touch tams-types/src/lib.rs tams-store/src/lib.rs tams-auth/src/lib.rs tams-auth-server/src/main.rs
 
-# Finalen Build
+# Final build
 RUN cargo build --release --bin tams-auth-server
 
 # --- Stage 2: Runtime --------------------------------------------------------

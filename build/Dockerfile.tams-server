@@ -7,7 +7,7 @@
 # --- Stage 1: Builder --------------------------------------------------------
 FROM rust:1.91-slim-bookworm AS builder
 
-# System-Abhängigkeiten für den Build
+# System dependencies for the build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-# Cargo-Manifest zuerst kopieren für optimales Layer-Caching
+# Copy Cargo manifests first for optimal layer caching
 COPY Cargo.toml Cargo.lock ./
 COPY tams-types/Cargo.toml ./tams-types/
 COPY tams-store/Cargo.toml ./tams-store/
@@ -23,7 +23,7 @@ COPY tams-auth/Cargo.toml ./tams-auth/
 COPY tams-server/Cargo.toml ./tams-server/
 COPY tams-auth-server/Cargo.toml ./tams-auth-server/
 
-# Dummy-Sourcen für Dependency-Caching erstellen
+# Create dummy sources for dependency caching
 RUN mkdir -p tams-types/src tams-store/src tams-auth/src tams-server/src tams-auth-server/src && \
     echo "pub fn dummy() {}" > tams-types/src/lib.rs && \
     echo "pub fn dummy() {}" > tams-store/src/lib.rs && \
@@ -31,23 +31,23 @@ RUN mkdir -p tams-types/src tams-store/src tams-auth/src tams-server/src tams-au
     echo "fn main() {}" > tams-server/src/main.rs && \
     echo "fn main() {}" > tams-auth-server/src/main.rs
 
-# Abhängigkeiten vorab kompilieren (Caching)
+# Pre-compile dependencies (caching)
 RUN cargo build --release --bin tams-server 2>/dev/null || true
 
-# Swagger-UI Assets (werden vom Rust-Compiler statisch eingebunden)
-# Diese müssen LOKAL vorher generiert werden: make swagger-ui && make api-spec
+# Swagger UI assets (statically embedded by the Rust compiler)
+# Must be generated locally beforehand: make swagger-ui && make api-spec
 COPY tams-server/swagger-ui ./tams-server/swagger-ui
 
-# Echten Source-Code kopieren
+# Copy real source code
 COPY tams-types/src ./tams-types/src
 COPY tams-store/src ./tams-store/src
 COPY tams-auth/src ./tams-auth/src
 COPY tams-server/src ./tams-server/src
 
-# Timestamps aktualisieren damit Cargo neu baut
+# Touch sources so Cargo rebuilds them
 RUN touch tams-types/src/lib.rs tams-store/src/lib.rs tams-auth/src/lib.rs tams-server/src/main.rs
 
-# Finalen Build
+# Final build
 RUN cargo build --release --bin tams-server
 
 # --- Stage 2: Runtime --------------------------------------------------------
@@ -58,7 +58,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Non-root User für Sicherheit
+# Non-root user for security
 RUN groupadd -r tams && useradd -r -g tams tams
 
 # Persistenz-Verzeichnis mit korrekten Berechtigungen

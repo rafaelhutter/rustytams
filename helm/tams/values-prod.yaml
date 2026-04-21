@@ -1,5 +1,5 @@
-# Produktions-Overrides – Secrets werden per --set oder separater values-secret.yaml gesetzt
-# image.tag wird per IMAGE_TAG in .env gesetzt und via --set image.tag=... übergeben
+# Production overrides – secrets are passed via --set or a separate values-secret.yaml
+# image.tag is set via IMAGE_TAG in .env and passed via --set image.tag=...
 
 ingress:
   host: tams.moovit24.de
@@ -12,11 +12,11 @@ b2:
   endpoint: s3.eu-central-003.backblazeb2.com
   region: eu-central-003
   bucket: tams-media
-  # accessKey und secretKey per --set oder values-secret.yaml
+  # accessKey and secretKey via --set or values-secret.yaml
 
 tams:
   username: admin
-  # password per --set oder values-secret.yaml
+  # password via --set or values-secret.yaml
 
 nodeAffinity:
   excludeHostname: "hc-k8s-cluster-node-1"
