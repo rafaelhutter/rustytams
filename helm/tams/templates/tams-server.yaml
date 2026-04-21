@@ -18,28 +18,31 @@ spec:
     spec:
       {{ include "tams.nodeAffinity" . | indent 6 | trim }}
       initContainers:
-        - name: fix-data-permissions
-          image: busybox:1.36
-          command: ["sh", "-c", "chmod -R 777 /data"]
-          volumeMounts:
-            - name: tams-data
-              mountPath: /data
-      volumes:
-        - name: tams-data
-          persistentVolumeClaim:
-            claimName: tams-server-data
+        - name: wait-for-mongodb
+          image: mongo:8.2.7
+          command:
+            - sh
+            - -c
+            - |
+              until mongosh mongodb.{{ .Values.namespace }}.svc.cluster.local:27017/admin \
+                --eval "db.adminCommand('ping')" --quiet 2>/dev/null; do
+                echo "Warte auf MongoDB..."
+                sleep 2
+              done
+              echo "MongoDB ist bereit."
       containers:
         - name: tams-server
           image: {{ include "tams.serverImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 5800
-          volumeMounts:
-            - name: tams-data
-              mountPath: /data
           envFrom:
             - secretRef:
                 name: tams-b2-credentials
+            - secretRef:
+                name: tams-credentials
+            - secretRef:
+                name: tams-mongo-credentials
             - configMapRef:
                 name: tams-config
           resources: {{ toYaml .Values.resources.server | nindent 12 }}

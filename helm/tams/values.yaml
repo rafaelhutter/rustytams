@@ -65,10 +65,8 @@ resources:
       cpu: "200m"
       memory: "128Mi"
 
-# -- Persistenz (PVC für /data) -----------------------------------------------
-persistence:
-  storageClass: longhorn
-  size: 1Gi
+# -- MongoDB URI (wird per --set mongoUri=... gesetzt, nie in Git committen) ---
+mongoUri: ""
 
 # -- Node Affinity ------------------------------------------------------------
 nodeAffinity:
