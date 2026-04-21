@@ -242,10 +242,11 @@
 
 {#if deleteTarget}
   <ConfirmDialog
+    open={true}
     title="Delete Source"
     message="Delete source &quot;{deleteTarget.label || deleteTarget.id}&quot; and all its flows? This cannot be undone."
-    confirmLabel={deleting ? 'Deleting...' : 'Delete'}
-    disabled={deleting}
+    confirmLabel="Delete"
+    loading={deleting}
     onConfirm={confirmDelete}
     onCancel={() => deleteTarget = null}
   />
