@@ -7,12 +7,24 @@ Catch-all route returns index.html for SPA deep linking.
 import argparse
 import os
 
-from flask import Flask, send_from_directory, make_response
+from flask import Flask, send_from_directory, make_response, jsonify
 from werkzeug.exceptions import NotFound
 
 DIST_DIR = os.path.join(os.path.dirname(__file__), "frontend", "dist")
 
 app = Flask(__name__, static_folder=None)
+
+DEFAULT_TITLE = "RustyTAMS"
+DEFAULT_LOGO_URL = "/logo.png"
+
+
+@app.route("/api/config")
+def config():
+    """Return runtime UI configuration (title, logo URL) from environment variables."""
+    return jsonify(
+        title=os.environ.get("TAMS_TITLE", DEFAULT_TITLE),
+        logoUrl=os.environ.get("TAMS_LOGO_URL", DEFAULT_LOGO_URL),
+    )
 
 
 def serve_index():

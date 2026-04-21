@@ -8,3 +8,5 @@ metadata:
 data:
   TAMS_HOSTNAME: {{ .Values.ingress.host | quote }}
   AUTH_URL: "http://tams-auth:5802"
+  TAMS_TITLE: {{ .Values.web.title | default "RustyTAMS" | quote }}
+  TAMS_LOGO_URL: {{ .Values.web.logoUrl | default "/logo.png" | quote }}

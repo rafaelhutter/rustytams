@@ -65,6 +65,11 @@ resources:
       cpu: "200m"
       memory: "128Mi"
 
+# -- Web UI branding ---------------------------------------------------------
+web:
+  title: "RustyTAMS"   # Page title and logo alt text
+  logoUrl: "/logo.png" # URL of the logo image (can be an external https:// URL)
+
 # -- MongoDB URI (wird per --set mongoUri=... gesetzt, nie in Git committen) ---
 mongoUri: ""
 

@@ -54,6 +54,26 @@ def test_static_js_served(client):
     assert "javascript" in resp.content_type
 
 
+def test_config_endpoint_defaults(client):
+    """GET /api/config returns default title and logoUrl."""
+    resp = client.get("/api/config")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["title"] == "RustyTAMS"
+    assert data["logoUrl"] == "/logo.png"
+
+
+def test_config_endpoint_custom(client, monkeypatch):
+    """GET /api/config reflects TAMS_TITLE and TAMS_LOGO_URL env vars."""
+    monkeypatch.setenv("TAMS_TITLE", "My TAMS")
+    monkeypatch.setenv("TAMS_LOGO_URL", "https://example.com/logo.png")
+    resp = client.get("/api/config")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["title"] == "My TAMS"
+    assert data["logoUrl"] == "https://example.com/logo.png"
+
+
 def test_spa_catch_all_returns_index(client):
     """Unknown paths should return index.html for SPA routing."""
     resp = client.get("/sources")

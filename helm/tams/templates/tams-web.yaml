@@ -23,6 +23,9 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 5803
+          envFrom:
+            - configMapRef:
+                name: tams-config
           resources: {{ toYaml .Values.resources.web | nindent 12 }}
           readinessProbe:
             httpGet:

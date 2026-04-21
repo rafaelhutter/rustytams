@@ -1,5 +1,6 @@
 <script lang="ts">
   import { link, location } from '../lib/router.js';
+  import { onMount } from 'svelte';
 
   interface NavLink {
     path: string;
@@ -15,11 +16,28 @@
     { path: '/record', label: 'Record', icon: '\u25CF' },
     { path: '/gallery', label: 'Gallery', icon: '\u25A3' },
   ];
+
+  let title = 'RustyTAMS';
+  let logoUrl = '/logo.png';
+
+  onMount(async () => {
+    try {
+      const res = await fetch('/api/config');
+      if (res.ok) {
+        const cfg = await res.json();
+        title = cfg.title || title;
+        logoUrl = cfg.logoUrl || logoUrl;
+        document.title = title;
+      }
+    } catch {
+      // keep defaults
+    }
+  });
 </script>
 
 <nav class="sidebar">
   <div class="brand">
-    <img src="/logo.png" alt="RustyTAMS" class="brand-logo" />
+    <img src={logoUrl} alt={title} class="brand-logo" />
   </div>
   <ul>
     {#each links as { path, label, icon }}
