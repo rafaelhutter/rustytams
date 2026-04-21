@@ -1,6 +1,5 @@
 # Produktions-Overrides – Secrets werden per --set oder separater values-secret.yaml gesetzt
-image:
-  tag: "8a3f625"
+# image.tag wird per IMAGE_TAG in .env gesetzt und via --set image.tag=... übergeben
 
 ingress:
   host: tams.moovit24.de
