@@ -29,6 +29,8 @@ jobs:
             dockerfile: build/Dockerfile.tams-server
           - service: tams-auth-server
             dockerfile: build/Dockerfile.tams-auth-server
+          - service: tams-web
+            dockerfile: build/Dockerfile.tams-web
 
     steps:
       - name: Checkout (mit Submodulen)

@@ -16,6 +16,7 @@ namespace: tams
 replicaCount:
   server: 1
   auth: 1
+  web: 1
 
 # -- Backblaze B2 Object Storage ----------------------------------------------
 b2:
@@ -56,6 +57,13 @@ resources:
     limits:
       cpu: "500m"
       memory: "256Mi"
+  web:
+    requests:
+      cpu: "50m"
+      memory: "32Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
 
 # -- cert-manager ClusterIssuers ----------------------------------------------
 # Auf false setzen wenn letsencrypt-prod/staging bereits im Cluster existieren

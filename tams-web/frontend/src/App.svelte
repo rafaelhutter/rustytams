@@ -30,7 +30,11 @@
 
   let username: string = $state('');
   let password: string = $state('');
-  let apiUrl: string = $state('http://localhost:5800');
+  let apiUrl: string = $state(
+    (typeof window !== 'undefined' && window.location.origin !== 'null')
+      ? window.location.origin
+      : 'http://localhost:5800'
+  );
 
   let currentRoute: RouteMatch | null = $derived(matchRoute($location, compiled));
 

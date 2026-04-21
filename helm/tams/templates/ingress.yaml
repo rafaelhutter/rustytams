@@ -24,11 +24,62 @@ spec:
     - host: {{ .Values.ingress.host }}
       http:
         paths:
-          - path: /
+          # TAMS API paths → tams-server
+          - path: /token
             pathType: Prefix
             backend:
               service:
                 name: tams-server
                 port:
                   number: 5800
+          - path: /api-spec
+            pathType: Prefix
+            backend:
+              service:
+                name: tams-server
+                port:
+                  number: 5800
+          - path: /docs
+            pathType: Prefix
+            backend:
+              service:
+                name: tams-server
+                port:
+                  number: 5800
+          - path: /service
+            pathType: Prefix
+            backend:
+              service:
+                name: tams-server
+                port:
+                  number: 5800
+          - path: /flows
+            pathType: Prefix
+            backend:
+              service:
+                name: tams-server
+                port:
+                  number: 5800
+          - path: /sources
+            pathType: Prefix
+            backend:
+              service:
+                name: tams-server
+                port:
+                  number: 5800
+          - path: /flow-delete-requests
+            pathType: Prefix
+            backend:
+              service:
+                name: tams-server
+                port:
+                  number: 5800
+          # Web UI (catch-all) → tams-web
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: tams-web
+                port:
+                  number: 5803
 {{- end }}
