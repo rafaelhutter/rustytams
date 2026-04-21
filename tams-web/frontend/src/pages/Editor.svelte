@@ -1,0 +1,1022 @@
+<script lang="ts">
+  import { onMount, onDestroy, untrack } from 'svelte';
+  import { apiGet, apiPost, apiPut, formatShortName } from '../lib/api.js';
+  import { buildFlowsQuery, buildFlowQuery, buildSegmentsQuery } from '../lib/query.js';
+  import { push, getHashParams } from '../lib/router.js';
+  import { addToast } from '../lib/toast.js';
+  import { errorMessage } from '../lib/errors.js';
+  import { parseTimerange, nanosToSeconds } from '../lib/timerange.js';
+  import { buildM3u8BlobUrl, revokeManifest, segmentDuration } from '../lib/hls.js';
+  import { FORMAT_VIDEO, fetchAllSegments, createFlowWithSource } from '../lib/ingest.js';
+  import { buildTimerangeFromNanos } from '../lib/rational.js';
+  import Spinner from '../components/Spinner.svelte';
+  import '@byomakase/omakase-player/dist/style.css';
+
+  import type { Segment } from '../types/tams.js';
+
+  // ── Types ────────────────────────────────────────────────────────────────
+
+  interface ClipEntry {
+    id: string;
+    flowId: string;
+    flowLabel: string;
+    segments: Segment[];
+    duration: number; // seconds (sum of segment durations)
+  }
+
+  // ── State ────────────────────────────────────────────────────────────────
+
+  // Bin
+  let binFlows: any[] = $state([]);
+  let binSearch: string = $state('');
+  let binSearchResults: any[] = $state([]);
+  let binSearching: boolean = $state(false);
+
+  // Source monitor
+  let activeFlow: any = $state(null);
+  let activeSegments: Segment[] = $state([]);
+  let sourceLoading: boolean = $state(false);
+  let sourceError: string | null = $state(null);
+  let sourcePlayerReady: boolean = $state(false);
+  let sourceCurrentTime: number = $state(0);
+  // Cumulative video times for each segment (index = segment index)
+  let segVideoTimes: number[] = $state([]);
+  let inSegIdx: number | null = $state(null);
+  let outSegIdx: number | null = $state(null);
+
+  // Internal player handles
+  let sourcePlayer: any = null;
+  let sourceModule: any = null;
+  let sourceSubs: any[] = [];
+  let sourceBlobUrls: Set<string> = new Set();
+
+  // Program monitor
+  let programPlayerReady: boolean = $state(false);
+  let programBuilding: boolean = $state(false);
+
+  let programPlayer: any = null;
+  let programSubs: any[] = [];
+  let programBlobUrls: Set<string> = new Set();
+
+  // Timeline
+  let timeline: ClipEntry[] = $state([]);
+  let dragSrcIdx: number | null = null;
+  let totalDuration: number = $derived(timeline.reduce((s, c) => s + c.duration, 0));
+
+  // Export
+  let exporting: boolean = $state(false);
+  let exportLabel: string = $state('');
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+
+  function formatSecs(s: number): string {
+    if (!s || s < 0) return '0:00';
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = Math.floor(s % 60);
+    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+    return `${m}:${String(sec).padStart(2, '0')}`;
+  }
+
+  /** Build cumulative segment video-start times (seconds) from segment list. */
+  function buildSegVideoTimes(segs: Segment[]): number[] {
+    const times: number[] = [];
+    let t = 0;
+    for (const seg of segs) {
+      times.push(t);
+      t += segmentDuration(seg.timerange);
+    }
+    return times;
+  }
+
+  /** Find the segment index that the given video time falls in. */
+  function segIdxAtTime(time: number, times: number[], segs: Segment[]): number {
+    let idx = 0;
+    for (let i = 0; i < times.length; i++) {
+      const dur = segmentDuration(segs[i].timerange);
+      if (time >= times[i] && time < times[i] + dur) { idx = i; break; }
+      if (i === times.length - 1) idx = i;
+    }
+    return idx;
+  }
+
+  /** Compute sum of segment durations for an array of segments. */
+  function sumDuration(segs: Segment[]): number {
+    return segs.reduce((s, seg) => s + segmentDuration(seg.timerange), 0);
+  }
+
+  // ── Bin ──────────────────────────────────────────────────────────────────
+
+  async function searchBin(): Promise<void> {
+    if (!binSearch.trim()) { binSearchResults = []; return; }
+    binSearching = true;
+    try {
+      const resp = await apiGet(buildFlowsQuery({ label: binSearch.trim(), format: FORMAT_VIDEO, limit: 20 }));
+      const already = new Set(binFlows.map((f: any) => f.id));
+      binSearchResults = (resp.data || []).filter((f: any) => !already.has(f.id));
+    } catch {
+      binSearchResults = [];
+    } finally {
+      binSearching = false;
+    }
+  }
+
+  function addFlowToBin(flow: any): void {
+    if (binFlows.find((f: any) => f.id === flow.id)) return;
+    binFlows = [...binFlows, flow];
+    binSearchResults = binSearchResults.filter((f: any) => f.id !== flow.id);
+  }
+
+  function removeFlowFromBin(flowId: string): void {
+    binFlows = binFlows.filter((f: any) => f.id !== flowId);
+    if (activeFlow?.id === flowId) {
+      destroySourcePlayer();
+      activeFlow = null;
+      activeSegments = [];
+    }
+  }
+
+  async function selectBinFlow(flow: any): Promise<void> {
+    if (activeFlow?.id === flow.id) return;
+    destroySourcePlayer();
+    inSegIdx = null;
+    outSegIdx = null;
+    activeFlow = flow;
+    activeSegments = [];
+    sourceLoading = true;
+    sourceError = null;
+    sourcePlayerReady = false;
+    try {
+      const segs = await fetchAllSegments(flow.id, { presigned: true });
+      activeSegments = segs;
+      segVideoTimes = buildSegVideoTimes(segs);
+    } catch (e) {
+      sourceError = errorMessage(e);
+    } finally {
+      sourceLoading = false;
+    }
+  }
+
+  // ── Source Player ────────────────────────────────────────────────────────
+
+  function destroySourcePlayer(): void {
+    for (const s of sourceSubs) { try { s.unsubscribe(); } catch { /* */ } }
+    sourceSubs = [];
+    if (sourcePlayer) { try { sourcePlayer.destroy(); } catch { /* */ } sourcePlayer = null; }
+    for (const u of sourceBlobUrls) revokeManifest(u);
+    sourceBlobUrls.clear();
+    sourcePlayerReady = false;
+    sourceCurrentTime = 0;
+  }
+
+  async function initSourcePlayer(container: HTMLElement): Promise<void> {
+    if (!activeSegments.length) return;
+    const manifestUrl = buildM3u8BlobUrl(activeSegments);
+    if (!manifestUrl) { sourceError = 'No playable segments (missing presigned URLs)'; return; }
+    sourceBlobUrls.add(manifestUrl);
+
+    try {
+      if (!sourceModule) sourceModule = await import('@byomakase/omakase-player');
+      container.id = 'omakase-source-monitor';
+
+      sourcePlayer = new sourceModule.OmakasePlayer({ playerHTMLElementId: container.id });
+      sourceSubs.push(sourcePlayer.loadVideo(manifestUrl, { protocol: 'hls' }).subscribe({
+        next: () => {
+          sourcePlayerReady = true;
+          // Track current time via observable
+          try {
+            const sub = sourcePlayer.video.onVideoTimeChange$.subscribe((evt: any) => {
+              sourceCurrentTime = evt?.currentTime ?? 0;
+            });
+            sourceSubs.push(sub);
+          } catch { /* observable may not be available */ }
+        },
+        error: (err: any) => {
+          sourceError = `Player error: ${errorMessage(err)}`;
+        },
+      }));
+    } catch (err) {
+      sourceError = `Init failed: ${errorMessage(err)}`;
+      for (const u of sourceBlobUrls) revokeManifest(u);
+      sourceBlobUrls.clear();
+    }
+  }
+
+  function sourcePlayerAction(node: HTMLElement, segs: Segment[]): { update(s: Segment[]): void; destroy(): void } {
+    if (segs.length) initSourcePlayer(node);
+    return {
+      update(newSegs: Segment[]) {
+        destroySourcePlayer();
+        if (newSegs.length) initSourcePlayer(node);
+      },
+      destroy() { destroySourcePlayer(); },
+    };
+  }
+
+  // ── Mark In / Out ────────────────────────────────────────────────────────
+
+  function markIn(): void {
+    if (!activeSegments.length || !segVideoTimes.length) return;
+    const idx = segIdxAtTime(sourceCurrentTime, segVideoTimes, activeSegments);
+    inSegIdx = idx;
+    if (outSegIdx !== null && outSegIdx < idx) outSegIdx = idx;
+    addToast(`Mark In: segment ${idx + 1}/${activeSegments.length}`, 'info');
+  }
+
+  function markOut(): void {
+    if (!activeSegments.length || !segVideoTimes.length) return;
+    const idx = segIdxAtTime(sourceCurrentTime, segVideoTimes, activeSegments);
+    outSegIdx = idx;
+    if (inSegIdx !== null && inSegIdx > idx) inSegIdx = idx;
+    addToast(`Mark Out: segment ${idx + 1}/${activeSegments.length}`, 'info');
+  }
+
+  function addToTimeline(): void {
+    if (!activeFlow || !activeSegments.length) return;
+    const from = inSegIdx ?? 0;
+    const to = outSegIdx ?? activeSegments.length - 1;
+    if (from > to) { addToast('In point must be before Out point', 'error'); return; }
+    const clipSegs = activeSegments.slice(from, to + 1);
+    const dur = sumDuration(clipSegs);
+    const clip: ClipEntry = {
+      id: crypto.randomUUID(),
+      flowId: activeFlow.id,
+      flowLabel: activeFlow.label || activeFlow.id.slice(0, 8),
+      segments: clipSegs,
+      duration: dur,
+    };
+    timeline = [...timeline, clip];
+    addToast(`Added clip (${formatSecs(dur)}) to timeline`, 'success');
+  }
+
+  function removeClip(clipId: string): void {
+    timeline = timeline.filter(c => c.id !== clipId);
+  }
+
+  // ── Timeline Drag & Drop ─────────────────────────────────────────────────
+
+  function onClipDragStart(e: DragEvent, idx: number): void {
+    dragSrcIdx = idx;
+    e.dataTransfer!.effectAllowed = 'move';
+  }
+
+  function onClipDragOver(e: DragEvent): void {
+    e.preventDefault();
+    e.dataTransfer!.dropEffect = 'move';
+  }
+
+  function onClipDrop(e: DragEvent, targetIdx: number): void {
+    e.preventDefault();
+    if (dragSrcIdx === null || dragSrcIdx === targetIdx) return;
+    const items = [...timeline];
+    const [moved] = items.splice(dragSrcIdx, 1);
+    items.splice(targetIdx, 0, moved);
+    timeline = items;
+    dragSrcIdx = null;
+  }
+
+  // ── Program Monitor ──────────────────────────────────────────────────────
+
+  function destroyProgramPlayer(): void {
+    for (const s of programSubs) { try { s.unsubscribe(); } catch { /* */ } }
+    programSubs = [];
+    if (programPlayer) { try { programPlayer.destroy(); } catch { /* */ } programPlayer = null; }
+    for (const u of programBlobUrls) revokeManifest(u);
+    programBlobUrls.clear();
+    programPlayerReady = false;
+  }
+
+  async function buildProgramPreview(): Promise<void> {
+    if (!timeline.length) { addToast('Timeline is empty', 'error'); return; }
+    destroyProgramPlayer();
+    programBuilding = true;
+
+    const container = document.getElementById('omakase-program-monitor');
+    if (!container) { programBuilding = false; return; }
+
+    // Flat segment list from all clips in order
+    const allSegs: Segment[] = timeline.flatMap(c => c.segments);
+    const manifestUrl = buildM3u8BlobUrl(allSegs);
+    if (!manifestUrl) {
+      addToast('No playable segments in timeline (missing presigned URLs)', 'error');
+      programBuilding = false;
+      return;
+    }
+    programBlobUrls.add(manifestUrl);
+
+    try {
+      if (!sourceModule) sourceModule = await import('@byomakase/omakase-player');
+      // Program player shares module with source player
+
+      programPlayer = new sourceModule.OmakasePlayer({ playerHTMLElementId: 'omakase-program-monitor' });
+      programSubs.push(programPlayer.loadVideo(manifestUrl, { protocol: 'hls' }).subscribe({
+        next: () => { programPlayerReady = true; },
+        error: (err: any) => { addToast(`Program player error: ${errorMessage(err)}`, 'error'); },
+      }));
+    } catch (err) {
+      addToast(`Program player init failed: ${errorMessage(err)}`, 'error');
+      for (const u of programBlobUrls) revokeManifest(u);
+      programBlobUrls.clear();
+    } finally {
+      programBuilding = false;
+    }
+  }
+
+  // ── Export ───────────────────────────────────────────────────────────────
+
+  async function exportRoughCut(): Promise<void> {
+    if (!timeline.length) { addToast('Timeline is empty', 'error'); return; }
+    exporting = true;
+    const label = exportLabel.trim() || `Rough Cut ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
+    try {
+      const videoFlowId = crypto.randomUUID();
+      const videoSourceId = crypto.randomUUID();
+
+      // Pick codec/container from first clip's source flow
+      const templateFlowId = timeline[0].flowId;
+      let templateFlow: any = null;
+      try {
+        const resp = await apiGet(buildFlowQuery(templateFlowId, {}));
+        templateFlow = resp.data;
+      } catch { /* use defaults */ }
+
+      await createFlowWithSource({
+        sourceId: videoSourceId,
+        flowId: videoFlowId,
+        format: FORMAT_VIDEO,
+        codec: templateFlow?.codec,
+        container: templateFlow?.container,
+        essenceParameters: templateFlow?.essence_parameters,
+        label,
+        sourceLabel: label,
+        sourceDescription: `Rough cut from ${timeline.length} clip(s)`,
+      });
+
+      await apiPut(`/flows/${videoFlowId}/tags/edit_export`, ['true']);
+      await apiPut(`/flows/${videoFlowId}/tags/rough_cut`, ['true']);
+
+      // Register segments with re-based contiguous timeranges starting at 0
+      const NANOS = 1_000_000_000n;
+      let offsetNanos = 0n;
+      let failed = 0;
+
+      for (const clip of timeline) {
+        for (const seg of clip.segments) {
+          const tr = parseTimerange(seg.timerange);
+          let durNanos: bigint;
+          if (tr.type !== 'never' && tr.start && tr.end) {
+            durNanos = tr.end.nanos - tr.start.nanos;
+          } else {
+            durNanos = BigInt(Math.round(segmentDuration(seg.timerange) * Number(NANOS)));
+          }
+          const newTimerange = buildTimerangeFromNanos(offsetNanos, offsetNanos + durNanos);
+          try {
+            await apiPost(`/flows/${videoFlowId}/segments`, {
+              object_id: seg.object_id,
+              timerange: newTimerange,
+            });
+            offsetNanos += durNanos;
+          } catch (err) {
+            console.warn('[export] segment failed:', err);
+            failed++;
+            offsetNanos += durNanos;
+          }
+        }
+      }
+
+      const msg = `Rough cut exported: ${timeline.reduce((s, c) => s + c.segments.length, 0)} segments` +
+        (failed ? ` (${failed} failed)` : '');
+      addToast(msg, failed ? 'warning' : 'success');
+      push(`/player/${videoFlowId}`);
+    } catch (err) {
+      addToast(`Export failed: ${errorMessage(err)}`, 'error');
+    } finally {
+      exporting = false;
+    }
+  }
+
+  // ── Lifecycle ────────────────────────────────────────────────────────────
+
+  onMount(() => {
+    // If launched from Gallery with a flowId param, load it into the bin
+    const params = getHashParams();
+    const flowId = params.get('flowId');
+    if (flowId) {
+      apiGet(buildFlowQuery(flowId, { includeTimerange: true }))
+        .then((resp: any) => {
+          const flow = resp.data;
+          if (flow) {
+            addFlowToBin(flow);
+            selectBinFlow(flow);
+          }
+        })
+        .catch(() => { /* ignore */ });
+    }
+  });
+
+  onDestroy(() => {
+    destroySourcePlayer();
+    destroyProgramPlayer();
+  });
+
+  // Derived: current segment index under playhead
+  let currentSegIdx: number = $derived.by(() => {
+    if (!activeSegments.length || !segVideoTimes.length) return 0;
+    return segIdxAtTime(sourceCurrentTime, segVideoTimes, activeSegments);
+  });
+
+  // Labels for in/out points
+  let inLabel: string = $derived(inSegIdx !== null ? `Seg ${inSegIdx + 1}` : '--');
+  let outLabel: string = $derived(outSegIdx !== null ? `Seg ${outSegIdx + 1}` : '--');
+  let clipDuration: number = $derived.by(() => {
+    if (inSegIdx === null || outSegIdx === null || inSegIdx > outSegIdx) return 0;
+    return sumDuration(activeSegments.slice(inSegIdx, outSegIdx + 1));
+  });
+</script>
+
+<div class="editor-page">
+  <div class="editor-header">
+    <h2>✂ Editor</h2>
+    <span class="muted" style="font-size:0.85em">Segment-accurate rough cut editor</span>
+  </div>
+
+  <!-- ── Top row: Bin + Source Monitor + Program Monitor ───────────────── -->
+  <div class="editor-top">
+
+    <!-- Bin Panel -->
+    <div class="bin-panel panel">
+      <h3 class="panel-title">Bin</h3>
+
+      <div class="bin-search">
+        <input
+          type="text"
+          bind:value={binSearch}
+          placeholder="Search flows…"
+          onkeydown={(e) => e.key === 'Enter' && searchBin()}
+        />
+        <button class="btn-small" onclick={searchBin} disabled={binSearching}>
+          {binSearching ? '…' : '🔍'}
+        </button>
+      </div>
+
+      {#if binSearchResults.length > 0}
+        <div class="bin-results">
+          {#each binSearchResults as f}
+            <div class="bin-result-item" role="button" tabindex="0"
+                 onclick={() => addFlowToBin(f)}
+                 onkeydown={(e) => e.key === 'Enter' && addFlowToBin(f)}>
+              <span class="bin-result-label">{f.label || f.id.slice(0, 8)}</span>
+              <span class="badge">{formatShortName(f.format)}</span>
+              <span class="add-icon">＋</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+
+      <div class="bin-list">
+        {#if binFlows.length === 0}
+          <p class="muted" style="font-size:0.8em;padding:0.5em 0">
+            Search for a video flow above, or open Editor from Gallery.
+          </p>
+        {:else}
+          {#each binFlows as flow}
+            <div class="bin-item" class:active={activeFlow?.id === flow.id}>
+              <button class="bin-select" onclick={() => selectBinFlow(flow)} title="Load in Source Monitor">
+                <span class="bin-item-label">{flow.label || flow.id.slice(0, 8)}</span>
+                <span class="badge">{formatShortName(flow.format)}</span>
+              </button>
+              <button class="bin-remove" onclick={() => removeFlowFromBin(flow.id)} title="Remove from bin">✕</button>
+            </div>
+          {/each}
+        {/if}
+      </div>
+    </div>
+
+    <!-- Source Monitor -->
+    <div class="monitor-panel panel">
+      <h3 class="panel-title">
+        Source Monitor
+        {#if activeFlow}
+          <span class="muted"> — {activeFlow.label || activeFlow.id.slice(0, 8)}</span>
+        {/if}
+      </h3>
+
+      <div class="player-wrapper">
+        {#if sourceLoading}
+          <div class="player-placeholder"><Spinner /> Loading segments…</div>
+        {:else if sourceError}
+          <div class="player-placeholder error-text">{sourceError}</div>
+        {:else if !activeFlow}
+          <div class="player-placeholder muted">Select a flow from the Bin</div>
+        {:else if activeSegments.length === 0}
+          <div class="player-placeholder muted">No segments found</div>
+        {:else}
+          <div
+            class="omakase-container"
+            use:sourcePlayerAction={activeSegments}
+          ></div>
+        {/if}
+      </div>
+
+      <!-- Mark In / Out controls -->
+      <div class="monitor-controls">
+        <div class="mark-points">
+          <button class="btn-mark" onclick={markIn} disabled={!sourcePlayerReady} title="Mark In at current segment">
+            ◀ Mark In
+          </button>
+          <span class="mark-label">{inLabel}</span>
+          <span class="mark-sep">→</span>
+          <span class="mark-label">{outLabel}</span>
+          <button class="btn-mark" onclick={markOut} disabled={!sourcePlayerReady} title="Mark Out at current segment">
+            Mark Out ▶
+          </button>
+        </div>
+        <div class="add-row">
+          {#if clipDuration > 0}
+            <span class="muted" style="font-size:0.8em">{formatSecs(clipDuration)}</span>
+          {/if}
+          <button
+            class="primary btn-add-clip"
+            onclick={addToTimeline}
+            disabled={!sourcePlayerReady || inSegIdx === null || outSegIdx === null}
+          >
+            ➕ Add to Timeline
+          </button>
+          <button
+            class="btn-small"
+            onclick={() => { inSegIdx = null; outSegIdx = null; }}
+            disabled={inSegIdx === null && outSegIdx === null}
+            title="Clear in/out points"
+          >
+            Clear marks
+          </button>
+        </div>
+      </div>
+
+      {#if sourcePlayerReady && activeSegments.length > 0}
+        <div class="segment-info muted">
+          Segment {currentSegIdx + 1} / {activeSegments.length}
+          {#if inSegIdx !== null && outSegIdx !== null && inSegIdx <= outSegIdx}
+            · Selection: {outSegIdx - inSegIdx + 1} segment(s)
+          {/if}
+        </div>
+      {/if}
+    </div>
+
+    <!-- Program Monitor -->
+    <div class="monitor-panel panel">
+      <h3 class="panel-title">Program Monitor</h3>
+
+      <div class="player-wrapper">
+        {#if programBuilding}
+          <div class="player-placeholder"><Spinner /> Building preview…</div>
+        {:else if timeline.length === 0}
+          <div class="player-placeholder muted">Add clips to the timeline, then build preview</div>
+        {:else}
+          <div id="omakase-program-monitor" class="omakase-container"></div>
+          {#if !programPlayerReady && !programBuilding}
+            <div class="player-placeholder muted">Press "Build Preview" to load</div>
+          {/if}
+        {/if}
+      </div>
+
+      <div class="monitor-controls">
+        <button
+          class="primary"
+          onclick={buildProgramPreview}
+          disabled={timeline.length === 0 || programBuilding}
+        >
+          {programBuilding ? 'Building…' : '▶ Build Preview'}
+        </button>
+        <span class="muted" style="font-size:0.8em">
+          {timeline.length} clip(s) · {formatSecs(totalDuration)}
+        </span>
+      </div>
+
+      <!-- Export -->
+      <div class="export-panel">
+        <input
+          type="text"
+          bind:value={exportLabel}
+          placeholder="Rough cut label (optional)"
+          class="export-label-input"
+        />
+        <button
+          class="btn-export"
+          onclick={exportRoughCut}
+          disabled={exporting || timeline.length === 0}
+        >
+          {exporting ? 'Exporting…' : '💾 Export Rough Cut'}
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Timeline ──────────────────────────────────────────────────────── -->
+  <div class="timeline-panel panel">
+    <div class="timeline-header">
+      <h3 class="panel-title" style="margin:0">Timeline</h3>
+      <span class="muted" style="font-size:0.85em">
+        {timeline.length} clip(s) · {formatSecs(totalDuration)}
+      </span>
+      {#if timeline.length > 0}
+        <button class="btn-small danger" onclick={() => timeline = []}>Clear all</button>
+      {/if}
+    </div>
+
+    {#if timeline.length === 0}
+      <p class="muted" style="padding:1em 0;font-size:0.85em">
+        Mark In/Out in the Source Monitor and click "Add to Timeline".
+        Drag clips to reorder.
+      </p>
+    {:else}
+      <div class="timeline-track">
+        {#each timeline as clip, idx}
+          <!-- Clip width proportional to duration (min 80px) -->
+          {@const w = Math.max(80, Math.min(300, clip.duration * 8))}
+          <div
+            class="timeline-clip"
+            style="width:{w}px"
+            draggable="true"
+            ondragstart={(e) => onClipDragStart(e, idx)}
+            ondragover={onClipDragOver}
+            ondrop={(e) => onClipDrop(e, idx)}
+            role="listitem"
+          >
+            <div class="clip-label" title="{clip.flowLabel} ({clip.segments.length} segs)">
+              {clip.flowLabel}
+            </div>
+            <div class="clip-meta">
+              {formatSecs(clip.duration)} · {clip.segments.length}s
+            </div>
+            <button
+              class="clip-remove"
+              onclick={() => removeClip(clip.id)}
+              title="Remove clip"
+            >✕</button>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </div>
+</div>
+
+<style>
+  .editor-page {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    padding: 0;
+  }
+
+  .editor-header {
+    display: flex;
+    align-items: baseline;
+    gap: 1em;
+    padding: 0.75em 1.5em 0.5em;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .editor-header h2 {
+    margin: 0;
+    font-size: 1.1em;
+  }
+
+  .editor-top {
+    display: grid;
+    grid-template-columns: 220px 1fr 1fr;
+    gap: 0.75em;
+    padding: 0.75em;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75em;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .panel-title {
+    margin: 0 0 0.5em;
+    font-size: 0.9em;
+    font-weight: 600;
+    color: var(--text-muted, #aaa);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    flex-shrink: 0;
+  }
+
+  /* Bin */
+  .bin-panel {
+    overflow-y: auto;
+    gap: 0.4em;
+  }
+
+  .bin-search {
+    display: flex;
+    gap: 0.4em;
+    flex-shrink: 0;
+    margin-bottom: 0.4em;
+  }
+
+  .bin-search input {
+    flex: 1;
+    font-size: 0.82em;
+  }
+
+  .bin-results {
+    background: var(--bg, #222);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    max-height: 120px;
+    overflow-y: auto;
+    margin-bottom: 0.4em;
+  }
+
+  .bin-result-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+    padding: 0.3em 0.5em;
+    cursor: pointer;
+    font-size: 0.8em;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .bin-result-item:hover { background: var(--hover, #333); }
+
+  .bin-result-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .add-icon { color: var(--accent, #5a9fd4); font-weight: 700; }
+
+  .bin-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.3em; }
+
+  .bin-item {
+    display: flex;
+    align-items: center;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .bin-item.active { border-color: var(--accent, #5a9fd4); }
+
+  .bin-select {
+    flex: 1;
+    background: transparent;
+    border: none;
+    text-align: left;
+    padding: 0.35em 0.5em;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+    font-size: 0.8em;
+    color: var(--text, #e0e0e0);
+    min-width: 0;
+  }
+
+  .bin-select:hover { background: var(--hover, #333); }
+
+  .bin-item-label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .bin-remove {
+    background: transparent;
+    border: none;
+    border-left: 1px solid var(--border);
+    color: var(--text-muted, #888);
+    padding: 0 0.4em;
+    cursor: pointer;
+    font-size: 0.75em;
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+  }
+
+  .bin-remove:hover { color: var(--error, #c0392b); }
+
+  /* Monitors */
+  .monitor-panel {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .player-wrapper {
+    flex: 1;
+    min-height: 0;
+    background: #000;
+    border-radius: 4px;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    margin-bottom: 0.5em;
+  }
+
+  .omakase-container {
+    width: 100%;
+    height: 100%;
+    min-height: 200px;
+  }
+
+  .player-placeholder {
+    padding: 1em;
+    text-align: center;
+    font-size: 0.85em;
+  }
+
+  /* Controls */
+  .monitor-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4em;
+    flex-shrink: 0;
+  }
+
+  .mark-points {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+    flex-wrap: wrap;
+  }
+
+  .btn-mark {
+    background: var(--panel, #333);
+    border: 1px solid var(--border);
+    color: var(--text, #e0e0e0);
+    border-radius: 4px;
+    padding: 0.25em 0.6em;
+    font-size: 0.8em;
+    cursor: pointer;
+  }
+
+  .btn-mark:hover:not(:disabled) { border-color: var(--accent, #5a9fd4); }
+  .btn-mark:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .mark-label {
+    font-family: monospace;
+    font-size: 0.8em;
+    color: var(--accent, #5a9fd4);
+    min-width: 3em;
+    text-align: center;
+  }
+
+  .mark-sep { color: var(--text-muted, #888); font-size: 0.8em; }
+
+  .add-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+  }
+
+  .btn-add-clip {
+    font-size: 0.82em;
+    padding: 0.3em 0.7em;
+  }
+
+  .segment-info {
+    font-size: 0.75em;
+    margin-top: 0.3em;
+    flex-shrink: 0;
+  }
+
+  /* Export */
+  .export-panel {
+    display: flex;
+    gap: 0.4em;
+    margin-top: 0.5em;
+    flex-shrink: 0;
+  }
+
+  .export-label-input {
+    flex: 1;
+    font-size: 0.82em;
+  }
+
+  .btn-export {
+    background: var(--accent, #5a9fd4);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    padding: 0.35em 0.8em;
+    font-size: 0.82em;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .btn-export:hover:not(:disabled) { filter: brightness(1.15); }
+  .btn-export:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Timeline */
+  .timeline-panel {
+    flex-shrink: 0;
+    margin: 0 0.75em 0.75em;
+    min-height: 120px;
+    max-height: 160px;
+  }
+
+  .timeline-header {
+    display: flex;
+    align-items: center;
+    gap: 1em;
+    margin-bottom: 0.5em;
+    flex-shrink: 0;
+  }
+
+  .btn-small {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text, #e0e0e0);
+    border-radius: 4px;
+    padding: 0.2em 0.5em;
+    font-size: 0.78em;
+    cursor: pointer;
+  }
+
+  .btn-small:hover:not(:disabled) { border-color: var(--accent, #5a9fd4); }
+  .btn-small:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .btn-small.danger:hover { border-color: var(--error, #c0392b); color: var(--error, #c0392b); }
+
+  .timeline-track {
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 4px 0;
+    flex: 1;
+    align-items: stretch;
+  }
+
+  .timeline-clip {
+    flex-shrink: 0;
+    background: var(--accent-dim, #2a4a6a);
+    border: 1px solid var(--accent, #5a9fd4);
+    border-radius: 4px;
+    padding: 0.3em 0.5em;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    cursor: grab;
+    user-select: none;
+    min-height: 60px;
+  }
+
+  .timeline-clip:active { cursor: grabbing; }
+
+  .clip-label {
+    font-size: 0.78em;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text, #e0e0e0);
+  }
+
+  .clip-meta {
+    font-size: 0.7em;
+    color: var(--text-muted, #aaa);
+  }
+
+  .clip-remove {
+    position: absolute;
+    top: 2px;
+    right: 3px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted, #888);
+    cursor: pointer;
+    font-size: 0.7em;
+    line-height: 1;
+    padding: 0;
+  }
+
+  .clip-remove:hover { color: var(--error, #c0392b); }
+
+  /* Shared badge */
+  :global(.badge) {
+    display: inline-block;
+    font-size: 0.72em;
+    padding: 0.1em 0.4em;
+    border-radius: 3px;
+    background: var(--accent-dim, #2a4a6a);
+    color: var(--accent, #5a9fd4);
+    white-space: nowrap;
+  }
+</style>

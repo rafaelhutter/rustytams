@@ -11,6 +11,7 @@
   import Player from './pages/Player.svelte';
   import Record from './pages/Record.svelte';
   import Gallery from './pages/Gallery.svelte';
+  import Editor from './pages/Editor.svelte';
   import { setCredentials, clearCredentials, configure, getApiBase, authenticated, authError } from './lib/api.js';
   import ToastContainer from './components/ToastContainer.svelte';
   import type { CompiledRoute, RouteMatch } from './lib/router.js';
@@ -26,6 +27,7 @@
     '/player/:id': Player,
     '/record': Record,
     '/gallery': Gallery,
+    '/editor': Editor,
   });
 
   let username: string = $state('');

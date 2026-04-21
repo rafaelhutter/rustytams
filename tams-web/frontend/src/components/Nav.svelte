@@ -15,6 +15,7 @@
     { path: '/webhooks', label: 'Webhooks', icon: '\u21C4' },
     { path: '/record', label: 'Record', icon: '\u25CF' },
     { path: '/gallery', label: 'Gallery', icon: '\u25A3' },
+    { path: '/editor', label: 'Editor', icon: '\u2702' },
   ];
 
   let title = 'RustyTAMS';

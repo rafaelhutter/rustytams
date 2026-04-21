@@ -416,6 +416,10 @@
               class:added={assemblyIdSet.has(flow.id)}
               onclick={(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); addToAssembly(flow); }}
             >{assemblyIdSet.has(flow.id) ? '\u2713' : '+'}</button>
+            <button class="card-edit-btn"
+              onclick={(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); push(`/editor?flowId=${flow.id}`); }}
+              title="Open in Editor"
+            >✂</button>
           {/if}
           <div class="card-thumb">
             {#if thumbnails[flow.id]}
@@ -630,7 +634,31 @@
     line-height: 1;
   }
   .gallery-card:hover .card-add-btn { opacity: 1; }
+  .card-edit-btn {
+    position: absolute;
+    top: 4px;
+    right: 32px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.3);
+    background: rgba(0,0,0,0.6);
+    color: #fff;
+    font-size: 0.85em;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.15s;
+    z-index: 2;
+    padding: 0;
+    line-height: 1;
+  }
+  .gallery-card:hover .card-edit-btn { opacity: 1; }
+  .card-edit-btn:hover { background: var(--accent, #5a9fd4); border-color: var(--accent, #5a9fd4); }
   .card-add-btn.added {
+
     opacity: 1;
     background: var(--accent);
     border-color: var(--accent);
