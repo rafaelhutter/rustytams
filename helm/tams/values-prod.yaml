@@ -1,6 +1,10 @@
 # Production overrides – secrets are passed via --set or a separate values-secret.yaml
 # image.tag is set via IMAGE_TAG in .env and passed via --set image.tag=...
 
+web:
+  title: "MoovIT TAMS"
+  logoUrl: "https://moov-rh-dropshare.s3-eu-central-1.amazonaws.com/moovit/moovit.png"
+
 ingress:
   host: tams.moovit24.de
   tls:
