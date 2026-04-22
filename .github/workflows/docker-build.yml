@@ -3,8 +3,7 @@ name: Build & Push Docker Images (linux/amd64)
 on:
   push:
     branches:
-      - main
-      - feat/implement_video_editor
+      - '**'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -55,10 +54,16 @@ jobs:
           echo "sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "value=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "is_main=false" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.ref_type }}" == "tag" ]]; then
             echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          else
+            echo "is_main=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.ref_name }}" == "main" ]]; then
             echo "value=latest" >> "$GITHUB_OUTPUT"
+            echo "is_main=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=dev" >> "$GITHUB_OUTPUT"
+            echo "is_main=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Swagger-UI Assets herunterladen
@@ -78,8 +83,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ steps.tag.outputs.value }}
-            ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ steps.tag.outputs.sha }}
-            ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:latest
+            ${{ steps.tag.outputs.is_main == 'true' && format('{0}/{1}:{2}', env.IMAGE_PREFIX, matrix.service, steps.tag.outputs.value) || '' }}
+            ${{ steps.tag.outputs.is_main == 'true' && format('{0}/{1}:{2}', env.IMAGE_PREFIX, matrix.service, steps.tag.outputs.sha) || '' }}
+            ${{ steps.tag.outputs.is_main == 'true' && format('{0}/{1}:latest', env.IMAGE_PREFIX, matrix.service) || format('{0}/{1}:dev', env.IMAGE_PREFIX, matrix.service) }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
