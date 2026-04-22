@@ -164,6 +164,13 @@
     }
   }
 
+  /** Trigger thumbnail load for a flowId if not yet cached (used in timeline) */
+  function ensureThumb(flowId: string): void {
+    if (binThumbnails[flowId] || binThumbFailed[flowId]) return;
+    const flow = allFlows.find((f: any) => f.id === flowId);
+    if (flow) loadBinThumbnail(flow, new AbortController().signal);
+  }
+
   function binLazyThumb(node: HTMLElement, flow: any): void | { destroy(): void } {
     let ctrl = new AbortController();
     const observer = new IntersectionObserver(([entry]) => {
@@ -721,20 +728,25 @@
         {#each timeline as clip, idx}
           <!-- Clip width proportional to duration (min 80px) -->
           {@const w = Math.max(80, Math.min(300, clip.duration * 8))}
+          {@const thumb = binThumbnails[clip.flowId] ?? null}
+          {#if !thumb}{ensureThumb(clip.flowId)}{/if}
           <div
             class="timeline-clip"
-            style="width:{w}px"
+            class:has-thumb={!!thumb}
+            style="width:{w}px{thumb ? `;background-image:url('${thumb}')` : ''}"
             draggable="true"
             ondragstart={(e) => onClipDragStart(e, idx)}
             ondragover={onClipDragOver}
             ondrop={(e) => onClipDrop(e, idx)}
             role="listitem"
           >
-            <div class="clip-label" title="{clip.flowLabel} ({clip.segments.length} segs)">
-              {clip.flowLabel}
-            </div>
-            <div class="clip-meta">
-              {formatSecs(clip.duration)} · {clip.segments.length}s
+            <div class="clip-overlay">
+              <div class="clip-label" title="{clip.flowLabel} ({clip.segments.length} segs)">
+                {clip.flowLabel}
+              </div>
+              <div class="clip-meta">
+                {formatSecs(clip.duration)} · {clip.segments.length} seg{clip.segments.length !== 1 ? 's' : ''}
+              </div>
             </div>
             <button
               class="clip-remove"
@@ -1074,17 +1086,31 @@
     background: var(--accent-dim, #2a4a6a);
     border: 1px solid var(--accent, #5a9fd4);
     border-radius: 4px;
-    padding: 0.3em 0.5em;
+    padding: 0;
     position: relative;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
+    justify-content: flex-end;
     cursor: grab;
     user-select: none;
-    min-height: 60px;
+    min-height: 70px;
+    overflow: hidden;
+    background-size: cover;
+    background-position: center;
   }
 
   .timeline-clip:active { cursor: grabbing; }
+
+  .clip-overlay {
+    background: linear-gradient(to top, rgba(0,0,0,0.85) 60%, rgba(0,0,0,0.2) 100%);
+    padding: 0.3em 0.5em 0.3em 0.4em;
+    margin-top: auto;
+  }
+
+  .timeline-clip:not(.has-thumb) .clip-overlay {
+    background: transparent;
+    padding: 0.3em 0.5em;
+  }
 
   .clip-label {
     font-size: 0.78em;
@@ -1092,12 +1118,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--text, #e0e0e0);
+    color: #fff;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.8);
   }
 
   .clip-meta {
-    font-size: 0.7em;
-    color: var(--text-muted, #aaa);
+    font-size: 0.68em;
+    color: rgba(255,255,255,0.75);
+    text-shadow: 0 1px 2px rgba(0,0,0,0.8);
   }
 
   .clip-remove {
