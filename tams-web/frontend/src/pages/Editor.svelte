@@ -487,6 +487,15 @@
     if (inSegIdx === null || outSegIdx === null || inSegIdx > outSegIdx) return 0;
     return sumDuration(activeSegments.slice(inSegIdx, outSegIdx + 1));
   });
+
+  // Auto-rebuild program preview whenever timeline changes (debounced 300ms)
+  let _previewDebounce: ReturnType<typeof setTimeout> | null = null;
+  $effect(() => {
+    const t = timeline; // track reactively
+    if (_previewDebounce) clearTimeout(_previewDebounce);
+    if (!t.length) { destroyProgramPlayer(); return; }
+    _previewDebounce = setTimeout(() => buildProgramPreview(), 300);
+  });
 </script>
 
 <div class="editor-page">
@@ -621,25 +630,16 @@
         {#if programBuilding}
           <div class="player-placeholder"><Spinner /> Building preview…</div>
         {:else if timeline.length === 0}
-          <div class="player-placeholder muted">Add clips to the timeline, then build preview</div>
+          <div class="player-placeholder muted">Add clips to the timeline to preview</div>
         {:else}
           <div id="omakase-program-monitor" class="omakase-container"></div>
-          {#if !programPlayerReady && !programBuilding}
-            <div class="player-placeholder muted">Press "Build Preview" to load</div>
-          {/if}
         {/if}
       </div>
 
       <div class="monitor-controls">
-        <button
-          class="primary"
-          onclick={buildProgramPreview}
-          disabled={timeline.length === 0 || programBuilding}
-        >
-          {programBuilding ? 'Building…' : '▶ Build Preview'}
-        </button>
         <span class="muted" style="font-size:0.8em">
           {timeline.length} clip(s) · {formatSecs(totalDuration)}
+          {#if programBuilding}&nbsp;<Spinner size="0.8em" />{/if}
         </span>
       </div>
 
@@ -855,8 +855,8 @@
   }
 
   .player-wrapper {
-    flex: 1;
-    min-height: 0;
+    width: 100%;
+    aspect-ratio: 16 / 9;
     background: #000;
     border-radius: 4px;
     position: relative;
@@ -865,6 +865,7 @@
     justify-content: center;
     overflow: hidden;
     margin-bottom: 0.5em;
+    flex-shrink: 0;
   }
 
   .omakase-container {
