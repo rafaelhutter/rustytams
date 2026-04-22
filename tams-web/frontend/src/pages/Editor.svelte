@@ -65,15 +65,34 @@
   // Program monitor
   let programPlayerReady: boolean = $state(false);
   let programBuilding: boolean = $state(false);
+  let programCurrentTime: number = $state(0);
 
   let programPlayer: any = null;
   let programSubs: any[] = [];
   let programBlobUrls: Set<string> = new Set();
 
+  // Timeline playhead
+  let timelineTrackEl: HTMLElement | null = $state(null);
+  let playheadDragging: boolean = false;
+
   // Timeline
   let timeline: ClipEntry[] = $state([]);
   let dragSrcIdx: number | null = null;
   let totalDuration: number = $derived(timeline.reduce((s, c) => s + c.duration, 0));
+
+  /** Clip widths array (same formula as template) — for playhead position calc */
+  let clipWidths: number[] = $derived(timeline.map((c: ClipEntry) => Math.max(80, Math.min(300, c.duration * 8))));
+
+  /** Total pixel width of all clips + gaps (gap=4px) */
+  let totalTrackPx: number = $derived(
+    (clipWidths as number[]).reduce((s: number, w: number) => s + w, 0) + Math.max(0, clipWidths.length - 1) * 4
+  );
+
+  /** Playhead X pixel position from left of timeline-track */
+  let playheadX: number = $derived.by(() => {
+    if (!totalDuration || !totalTrackPx) return 0;
+    return (programCurrentTime / totalDuration) * totalTrackPx;
+  });
 
   // Export
   let exporting: boolean = $state(false);
@@ -345,6 +364,7 @@
     for (const u of programBlobUrls) revokeManifest(u);
     programBlobUrls.clear();
     programPlayerReady = false;
+    programCurrentTime = 0;
   }
 
   async function buildProgramPreview(): Promise<void> {
@@ -371,7 +391,16 @@
 
       programPlayer = new sourceModule.OmakasePlayer({ playerHTMLElementId: 'omakase-program-monitor' });
       programSubs.push(programPlayer.loadVideo(manifestUrl, { protocol: 'hls' }).subscribe({
-        next: () => { programPlayerReady = true; },
+        next: () => {
+          programPlayerReady = true;
+          // Sync playhead with program player time
+          programSubs.push(programPlayer.video.onVideoTimeChange$.subscribe({
+            next: (ev: any) => {
+              programCurrentTime = ev.currentTime;
+              autoScrollPlayhead();
+            }
+          }));
+        },
         error: (err: any) => { addToast(`Program player error: ${errorMessage(err)}`, 'error'); },
       }));
     } catch (err) {
@@ -505,6 +534,54 @@
   });
 
   // Keyboard shortcuts
+  function autoScrollPlayhead(): void {
+    if (!timelineTrackEl) return;
+    const el = timelineTrackEl;
+    const x = playheadX;
+    const margin = 60;
+    if (x < el.scrollLeft + margin) {
+      el.scrollLeft = Math.max(0, x - margin);
+    } else if (x > el.scrollLeft + el.clientWidth - margin) {
+      el.scrollLeft = x - el.clientWidth + margin;
+    }
+  }
+
+  function onPlayheadMouseDown(e: MouseEvent): void {
+    e.preventDefault();
+    playheadDragging = true;
+    seekProgramToX(e.clientX);
+    window.addEventListener('mousemove', onPlayheadMouseMove);
+    window.addEventListener('mouseup', onPlayheadMouseUp, { once: true });
+  }
+
+  function onPlayheadMouseMove(e: MouseEvent): void {
+    if (!playheadDragging) return;
+    seekProgramToX(e.clientX);
+  }
+
+  function onPlayheadMouseUp(): void {
+    playheadDragging = false;
+    window.removeEventListener('mousemove', onPlayheadMouseMove);
+  }
+
+  function onTrackClick(e: MouseEvent): void {
+    // Only fire when clicking the ruler/track directly (not on clips)
+    const target = e.target as HTMLElement;
+    if (target.closest('.timeline-clip')) return;
+    seekProgramToX(e.clientX);
+  }
+
+  function seekProgramToX(clientX: number): void {
+    if (!timelineTrackEl || !totalDuration || !totalTrackPx) return;
+    const rect = timelineTrackEl.getBoundingClientRect();
+    const x = clientX - rect.left + timelineTrackEl.scrollLeft;
+    const t = Math.max(0, Math.min(totalDuration, (x / totalTrackPx) * totalDuration));
+    programCurrentTime = t;
+    if (programPlayer?.video) {
+      programPlayer.video.seekToTime(t).subscribe();
+    }
+  }
+
   function handleKeydown(e: KeyboardEvent): void {
     // Don't fire when typing in an input/textarea
     const tag = (e.target as HTMLElement)?.tagName;
@@ -724,39 +801,63 @@
         Drag clips to reorder.
       </p>
     {:else}
-      <div class="timeline-track">
-        {#each timeline as clip, idx}
-          <!-- Clip width proportional to duration (min 80px) -->
-          {@const w = Math.max(80, Math.min(300, clip.duration * 8))}
-          {@const thumb = binThumbnails[clip.flowId] ?? null}
-          {#if !thumb}{ensureThumb(clip.flowId)}{/if}
-          <div
-            class="timeline-clip"
-            style="width:{w}px"
-            draggable="true"
-            ondragstart={(e) => onClipDragStart(e, idx)}
-            ondragover={onClipDragOver}
-            ondrop={(e) => onClipDrop(e, idx)}
-            role="listitem"
-          >
-            {#if thumb}
-              <div class="clip-thumb" style="background-image:url('{thumb}')"></div>
-            {/if}
-            <div class="clip-body">
-              <div class="clip-label" title="{clip.flowLabel} ({clip.segments.length} segs)">
-                {clip.flowLabel}
+      <div
+        class="timeline-ruler"
+        onclick={onTrackClick}
+        role="presentation"
+      >
+        <div
+          class="timeline-track"
+          bind:this={timelineTrackEl}
+        >
+          {#each timeline as clip, idx}
+            <!-- Clip width proportional to duration (min 80px) -->
+            {@const w = Math.max(80, Math.min(300, clip.duration * 8))}
+            {@const thumb = binThumbnails[clip.flowId] ?? null}
+            {#if !thumb}{ensureThumb(clip.flowId)}{/if}
+            <div
+              class="timeline-clip"
+              style="width:{w}px"
+              draggable="true"
+              ondragstart={(e) => onClipDragStart(e, idx)}
+              ondragover={onClipDragOver}
+              ondrop={(e) => onClipDrop(e, idx)}
+              role="listitem"
+            >
+              {#if thumb}
+                <div class="clip-thumb" style="background-image:url('{thumb}')"></div>
+              {/if}
+              <div class="clip-body">
+                <div class="clip-label" title="{clip.flowLabel} ({clip.segments.length} segs)">
+                  {clip.flowLabel}
+                </div>
+                <div class="clip-meta">
+                  {formatSecs(clip.duration)} · {clip.segments.length} seg{clip.segments.length !== 1 ? 's' : ''}
+                </div>
               </div>
-              <div class="clip-meta">
-                {formatSecs(clip.duration)} · {clip.segments.length} seg{clip.segments.length !== 1 ? 's' : ''}
-              </div>
+              <button
+                class="clip-remove"
+                onclick={() => removeClip(clip.id)}
+                title="Remove clip"
+              >✕</button>
             </div>
-            <button
-              class="clip-remove"
-              onclick={() => removeClip(clip.id)}
-              title="Remove clip"
-            >✕</button>
-          </div>
-        {/each}
+          {/each}
+        </div>
+
+        <!-- Playhead -->
+        {#if timeline.length > 0 && totalTrackPx > 0}
+          <div
+            class="playhead"
+            style="left:{playheadX}px"
+            onmousedown={onPlayheadMouseDown}
+            role="slider"
+            aria-label="Playhead"
+            aria-valuenow={programCurrentTime}
+            aria-valuemin={0}
+            aria-valuemax={totalDuration}
+            tabindex="0"
+          ></div>
+        {/if}
       </div>
     {/if}
   </div>
@@ -1073,13 +1174,20 @@
 
   .btn-small.danger:hover { border-color: var(--error, #c0392b); color: var(--error, #c0392b); }
 
+  .timeline-ruler {
+    position: relative;
+    flex: 1;
+    overflow: hidden; /* clip the playhead vertically */
+    display: flex;
+    flex-direction: column;
+  }
+
   .timeline-track {
     display: flex;
     gap: 4px;
     overflow-x: auto;
     overflow-y: hidden;
     padding: 4px 0 6px;
-    flex: 1;
     align-items: stretch;
     scrollbar-width: thin;
     scrollbar-color: #3a5a7a #1a2530;
@@ -1168,6 +1276,33 @@
   }
 
   .clip-remove:hover { color: var(--error, #c0392b); }
+
+  /* Playhead */
+  .playhead {
+    position: absolute;
+    top: 0;
+    width: 2px;
+    height: 100%;
+    background: #e74c3c;
+    transform: translateX(-1px);
+    pointer-events: all;
+    cursor: ew-resize;
+    z-index: 10;
+    transition: left 0.05s linear;
+  }
+
+  .playhead::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 8px solid #e74c3c;
+  }
 
   /* Shared badge */
   :global(.badge) {
