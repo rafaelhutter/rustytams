@@ -732,15 +732,17 @@
           {#if !thumb}{ensureThumb(clip.flowId)}{/if}
           <div
             class="timeline-clip"
-            class:has-thumb={!!thumb}
-            style="width:{w}px{thumb ? `;background-image:url('${thumb}')` : ''}"
+            style="width:{w}px"
             draggable="true"
             ondragstart={(e) => onClipDragStart(e, idx)}
             ondragover={onClipDragOver}
             ondrop={(e) => onClipDrop(e, idx)}
             role="listitem"
           >
-            <div class="clip-overlay">
+            {#if thumb}
+              <div class="clip-thumb" style="background-image:url('{thumb}')"></div>
+            {/if}
+            <div class="clip-body">
               <div class="clip-label" title="{clip.flowLabel} ({clip.segments.length} segs)">
                 {clip.flowLabel}
               </div>
@@ -1076,40 +1078,66 @@
     gap: 4px;
     overflow-x: auto;
     overflow-y: hidden;
-    padding: 4px 0;
+    padding: 4px 0 6px;
     flex: 1;
     align-items: stretch;
+    scrollbar-width: thin;
+    scrollbar-color: #3a5a7a #1a2530;
+  }
+
+  .timeline-track::-webkit-scrollbar {
+    height: 5px;
+  }
+
+  .timeline-track::-webkit-scrollbar-track {
+    background: #1a2530;
+    border-radius: 3px;
+  }
+
+  .timeline-track::-webkit-scrollbar-thumb {
+    background: #3a5a7a;
+    border-radius: 3px;
   }
 
   .timeline-clip {
     flex-shrink: 0;
-    background: var(--accent-dim, #2a4a6a);
+    background: #1e3248;
     border: 1px solid var(--accent, #5a9fd4);
     border-radius: 4px;
     padding: 0;
     position: relative;
     display: flex;
-    flex-direction: column;
-    justify-content: flex-end;
+    flex-direction: row;
     cursor: grab;
     user-select: none;
-    min-height: 70px;
+    height: 70px;
     overflow: hidden;
-    background-size: cover;
-    background-position: center;
   }
 
   .timeline-clip:active { cursor: grabbing; }
 
-  .clip-overlay {
-    background: linear-gradient(to top, rgba(0,0,0,0.85) 60%, rgba(0,0,0,0.2) 100%);
-    padding: 0.3em 0.5em 0.3em 0.4em;
-    margin-top: auto;
+  /* Thumbnail: fixed 16:9 box on the left */
+  .clip-thumb {
+    flex-shrink: 0;
+    width: 124px; /* 70px * 16/9 ≈ 124px */
+    height: 70px;
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-color: #0d1a26;
+    border-right: 1px solid rgba(90,159,212,0.25);
   }
 
-  .timeline-clip:not(.has-thumb) .clip-overlay {
-    background: transparent;
-    padding: 0.3em 0.5em;
+  /* Body: text fills remaining space with matching dark-blue bg */
+  .clip-body {
+    flex: 1;
+    min-width: 0;
+    background: #1e3248;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 0.3em 1.4em 0.3em 0.5em;
+    gap: 0.15em;
   }
 
   .clip-label {
@@ -1118,14 +1146,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #fff;
-    text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+    color: var(--text, #e0e0e0);
   }
 
   .clip-meta {
     font-size: 0.68em;
-    color: rgba(255,255,255,0.75);
-    text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+    color: var(--text-muted, #7a9aba);
   }
 
   .clip-remove {
