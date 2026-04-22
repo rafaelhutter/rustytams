@@ -9,6 +9,8 @@
   import { buildM3u8BlobUrl, revokeManifest, segmentDuration } from '../lib/hls.js';
   import { FORMAT_VIDEO, fetchAllSegments, createFlowWithSource } from '../lib/ingest.js';
   import { buildTimerangeFromNanos } from '../lib/rational.js';
+  import { extractThumbnail, clearThumbnailCache, enableThumbnailCache } from '../lib/thumbnail.js';
+  import { parsePagination } from '../lib/api.js';
   import Spinner from '../components/Spinner.svelte';
   import '@byomakase/omakase-player/dist/style.css';
 
@@ -26,11 +28,21 @@
 
   // ── State ────────────────────────────────────────────────────────────────
 
-  // Bin
-  let binFlows: any[] = $state([]);
+  // Bin – all flows
+  let allFlows: any[] = $state([]);
+  let binLoading: boolean = $state(false);
+  let binNextKey: string | null = null;
+  let binHasMore: boolean = $state(false);
+  let binLoadingMore: boolean = $state(false);
   let binSearch: string = $state('');
-  let binSearchResults: any[] = $state([]);
-  let binSearching: boolean = $state(false);
+  let binThumbnails: Record<string, string> = $state({});
+  let binThumbFailed: Record<string, boolean> = $state({});
+
+  let filteredBinFlows: any[] = $derived.by(() => {
+    if (!binSearch.trim()) return allFlows;
+    const q = binSearch.trim().toLowerCase();
+    return allFlows.filter(f => (f.label || '').toLowerCase().includes(q) || f.id.toLowerCase().includes(q));
+  });
 
   // Source monitor
   let activeFlow: any = $state(null);
@@ -107,34 +119,76 @@
 
   // ── Bin ──────────────────────────────────────────────────────────────────
 
-  async function searchBin(): Promise<void> {
-    if (!binSearch.trim()) { binSearchResults = []; return; }
-    binSearching = true;
+  async function loadBinFlows(): Promise<void> {
+    binLoading = true;
     try {
-      const resp = await apiGet(buildFlowsQuery({ label: binSearch.trim(), format: FORMAT_VIDEO, limit: 20 }));
-      const already = new Set(binFlows.map((f: any) => f.id));
-      binSearchResults = (resp.data || []).filter((f: any) => !already.has(f.id));
-    } catch {
-      binSearchResults = [];
-    } finally {
-      binSearching = false;
+      const resp = await apiGet(buildFlowsQuery({ format: FORMAT_VIDEO, limit: 30, includeTimerange: true }));
+      allFlows = resp.data || [];
+      const pag = parsePagination(resp.headers);
+      binNextKey = pag.nextKey;
+      binHasMore = !!binNextKey;
+    } catch { /* ignore */ } finally {
+      binLoading = false;
     }
   }
 
-  function addFlowToBin(flow: any): void {
-    if (binFlows.find((f: any) => f.id === flow.id)) return;
-    binFlows = [...binFlows, flow];
-    binSearchResults = binSearchResults.filter((f: any) => f.id !== flow.id);
-  }
-
-  function removeFlowFromBin(flowId: string): void {
-    binFlows = binFlows.filter((f: any) => f.id !== flowId);
-    if (activeFlow?.id === flowId) {
-      destroySourcePlayer();
-      activeFlow = null;
-      activeSegments = [];
+  async function loadMoreBinFlows(): Promise<void> {
+    if (binLoadingMore || !binHasMore || !binNextKey) return;
+    binLoadingMore = true;
+    try {
+      const resp = await apiGet(buildFlowsQuery({ format: FORMAT_VIDEO, limit: 30, includeTimerange: true }, binNextKey));
+      const newFlows: any[] = resp.data || [];
+      const existing = new Set(allFlows.map((f: any) => f.id));
+      allFlows = [...allFlows, ...newFlows.filter(f => !existing.has(f.id))];
+      const pag = parsePagination(resp.headers);
+      binNextKey = pag.nextKey;
+      binHasMore = !!binNextKey && newFlows.length >= 30;
+    } catch { /* ignore */ } finally {
+      binLoadingMore = false;
     }
   }
+
+  async function loadBinThumbnail(flow: any, signal: AbortSignal): Promise<void> {
+    if (binThumbnails[flow.id] || binThumbFailed[flow.id]) return;
+    try {
+      const resp = await apiGet(buildSegmentsQuery(flow.id, { limit: 3, presigned: true }));
+      if (signal?.aborted) return;
+      const segs: any[] = resp.data || [];
+      if (!segs.length) { binThumbFailed = { ...binThumbFailed, [flow.id]: true }; return; }
+      const url = await extractThumbnail({ key: flow.id, segments: segs, flow, width: 320, signal });
+      if (signal?.aborted) return;
+      if (url) binThumbnails = { ...binThumbnails, [flow.id]: url };
+      else binThumbFailed = { ...binThumbFailed, [flow.id]: true };
+    } catch (e) {
+      if (!signal?.aborted) binThumbFailed = { ...binThumbFailed, [flow.id]: true };
+    }
+  }
+
+  function binLazyThumb(node: HTMLElement, flow: any): void | { destroy(): void } {
+    let ctrl = new AbortController();
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting && !binThumbnails[flow.id] && !binThumbFailed[flow.id]) {
+        loadBinThumbnail(flow, ctrl.signal);
+      } else if (!entry.isIntersecting) {
+        ctrl.abort(); ctrl = new AbortController();
+      }
+    }, { rootMargin: '100px' });
+    observer.observe(node);
+    return { destroy() { observer.disconnect(); ctrl.abort(); } };
+  }
+
+  function binInfiniteScroll(node: HTMLElement): { destroy(): void } {
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) loadMoreBinFlows();
+    }, { rootMargin: '200px' });
+    observer.observe(node);
+    return { destroy() { observer.disconnect(); } };
+  }
+
+  function addFlowToBin(_flow: any): void { /* no-op – all flows are always shown */ }
+
+  function removeFlowFromBin(_flowId: string): void { /* no-op */ }
+
 
   async function selectBinFlow(flow: any): Promise<void> {
     if (activeFlow?.id === flow.id) return;
@@ -398,17 +452,17 @@
   // ── Lifecycle ────────────────────────────────────────────────────────────
 
   onMount(() => {
-    // If launched from Gallery with a flowId param, load it into the bin
+    enableThumbnailCache();
+    loadBinFlows();
+
+    // If launched from Gallery with a flowId param, load it into the source monitor
     const params = getHashParams();
     const flowId = params.get('flowId');
     if (flowId) {
       apiGet(buildFlowQuery(flowId, { includeTimerange: true }))
         .then((resp: any) => {
           const flow = resp.data;
-          if (flow) {
-            addFlowToBin(flow);
-            selectBinFlow(flow);
-          }
+          if (flow) selectBinFlow(flow);
         })
         .catch(() => { /* ignore */ });
     }
@@ -417,6 +471,7 @@
   onDestroy(() => {
     destroySourcePlayer();
     destroyProgramPlayer();
+    clearThumbnailCache();
   });
 
   // Derived: current segment index under playhead
@@ -447,47 +502,42 @@
     <div class="bin-panel panel">
       <h3 class="panel-title">Bin</h3>
 
-      <div class="bin-search">
-        <input
-          type="text"
-          bind:value={binSearch}
-          placeholder="Search flows…"
-          onkeydown={(e) => e.key === 'Enter' && searchBin()}
-        />
-        <button class="btn-small" onclick={searchBin} disabled={binSearching}>
-          {binSearching ? '…' : '🔍'}
-        </button>
-      </div>
+      <input
+        type="text"
+        bind:value={binSearch}
+        placeholder="Filter flows…"
+        class="bin-filter-input"
+      />
 
-      {#if binSearchResults.length > 0}
-        <div class="bin-results">
-          {#each binSearchResults as f}
-            <div class="bin-result-item" role="button" tabindex="0"
-                 onclick={() => addFlowToBin(f)}
-                 onkeydown={(e) => e.key === 'Enter' && addFlowToBin(f)}>
-              <span class="bin-result-label">{f.label || f.id.slice(0, 8)}</span>
-              <span class="badge">{formatShortName(f.format)}</span>
-              <span class="add-icon">＋</span>
-            </div>
-          {/each}
-        </div>
-      {/if}
-
-      <div class="bin-list">
-        {#if binFlows.length === 0}
-          <p class="muted" style="font-size:0.8em;padding:0.5em 0">
-            Search for a video flow above, or open Editor from Gallery.
-          </p>
+      <div class="bin-grid">
+        {#if binLoading}
+          <div class="bin-empty"><Spinner size="1em" /> Loading…</div>
+        {:else if filteredBinFlows.length === 0}
+          <p class="bin-empty muted">No video flows found.</p>
         {:else}
-          {#each binFlows as flow}
-            <div class="bin-item" class:active={activeFlow?.id === flow.id}>
-              <button class="bin-select" onclick={() => selectBinFlow(flow)} title="Load in Source Monitor">
-                <span class="bin-item-label">{flow.label || flow.id.slice(0, 8)}</span>
-                <span class="badge">{formatShortName(flow.format)}</span>
-              </button>
-              <button class="bin-remove" onclick={() => removeFlowFromBin(flow.id)} title="Remove from bin">✕</button>
-            </div>
+          {#each filteredBinFlows as flow (flow.id)}
+            <button
+              class="bin-card"
+              class:active={activeFlow?.id === flow.id}
+              onclick={() => selectBinFlow(flow)}
+              title={flow.label || flow.id}
+              use:binLazyThumb={flow}
+            >
+              <div class="bin-card-thumb">
+                {#if binThumbnails[flow.id]}
+                  <img src={binThumbnails[flow.id]} alt="" />
+                {:else if binThumbFailed[flow.id]}
+                  <span class="thumb-icon">▶</span>
+                {:else}
+                  <span class="thumb-icon"><Spinner size="0.8em" /></span>
+                {/if}
+              </div>
+              <div class="bin-card-label">{flow.label || flow.id.slice(0, 8)}</div>
+            </button>
           {/each}
+          {#if binHasMore}
+            <div class="bin-sentinel" use:binInfiniteScroll></div>
+          {/if}
         {/if}
       </div>
     </div>
@@ -716,97 +766,86 @@
 
   /* Bin */
   .bin-panel {
-    overflow-y: auto;
+    overflow: hidden;
     gap: 0.4em;
   }
 
-  .bin-search {
-    display: flex;
-    gap: 0.4em;
+  .bin-filter-input {
+    font-size: 0.82em;
     flex-shrink: 0;
     margin-bottom: 0.4em;
+    width: 100%;
+    box-sizing: border-box;
   }
 
-  .bin-search input {
+  .bin-grid {
     flex: 1;
-    font-size: 0.82em;
-  }
-
-  .bin-results {
-    background: var(--bg, #222);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    max-height: 120px;
     overflow-y: auto;
-    margin-bottom: 0.4em;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 4px;
+    align-content: start;
   }
 
-  .bin-result-item {
-    display: flex;
-    align-items: center;
-    gap: 0.4em;
-    padding: 0.3em 0.5em;
-    cursor: pointer;
-    font-size: 0.8em;
-    border-bottom: 1px solid var(--border);
+  .bin-empty {
+    grid-column: 1 / -1;
+    padding: 1em 0;
+    text-align: center;
+    font-size: 0.82em;
+    color: var(--text-muted, #888);
   }
 
-  .bin-result-item:hover { background: var(--hover, #333); }
-
-  .bin-result-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  .add-icon { color: var(--accent, #5a9fd4); font-weight: 700; }
-
-  .bin-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.3em; }
-
-  .bin-item {
-    display: flex;
-    align-items: center;
+  .bin-card {
+    background: var(--bg, #1e1e1e);
     border: 1px solid var(--border);
     border-radius: 4px;
+    cursor: pointer;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    text-align: left;
+    padding: 0;
+    transition: border-color 0.15s;
+  }
+
+  .bin-card:hover { border-color: var(--accent, #5a9fd4); }
+  .bin-card.active { border-color: var(--accent, #5a9fd4); box-shadow: 0 0 0 1px var(--accent, #5a9fd4); }
+
+  .bin-card-thumb {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background: #111;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     overflow: hidden;
   }
 
-  .bin-item.active { border-color: var(--accent, #5a9fd4); }
-
-  .bin-select {
-    flex: 1;
-    background: transparent;
-    border: none;
-    text-align: left;
-    padding: 0.35em 0.5em;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 0.4em;
-    font-size: 0.8em;
-    color: var(--text, #e0e0e0);
-    min-width: 0;
+  .bin-card-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
   }
 
-  .bin-select:hover { background: var(--hover, #333); }
+  .thumb-icon {
+    color: var(--text-muted, #666);
+    font-size: 0.9em;
+  }
 
-  .bin-item-label {
-    flex: 1;
+  .bin-card-label {
+    font-size: 0.72em;
+    padding: 0.25em 0.35em;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    color: var(--text, #e0e0e0);
   }
 
-  .bin-remove {
-    background: transparent;
-    border: none;
-    border-left: 1px solid var(--border);
-    color: var(--text-muted, #888);
-    padding: 0 0.4em;
-    cursor: pointer;
-    font-size: 0.75em;
-    align-self: stretch;
-    display: flex;
-    align-items: center;
+  .bin-sentinel {
+    grid-column: 1 / -1;
+    height: 1px;
   }
-
-  .bin-remove:hover { color: var(--error, #c0392b); }
 
   /* Monitors */
   .monitor-panel {
