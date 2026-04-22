@@ -496,12 +496,49 @@
     if (!t.length) { destroyProgramPlayer(); return; }
     _previewDebounce = setTimeout(() => buildProgramPreview(), 300);
   });
+
+  // Keyboard shortcuts
+  function handleKeydown(e: KeyboardEvent): void {
+    // Don't fire when typing in an input/textarea
+    const tag = (e.target as HTMLElement)?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+    switch (e.key) {
+      case 'i':
+      case 'I':
+        e.preventDefault();
+        markIn();
+        break;
+      case 'o':
+      case 'O':
+        e.preventDefault();
+        markOut();
+        break;
+      case '.':
+        e.preventDefault();
+        addToTimeline();
+        break;
+      case ' ':
+        e.preventDefault();
+        // Toggle play/pause on whichever player was last used
+        try { sourcePlayer?.video?.play(); } catch { /* ignore */ }
+        break;
+    }
+  }
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 <div class="editor-page">
   <div class="editor-header">
     <h2>✂ Editor</h2>
     <span class="muted" style="font-size:0.85em">Segment-accurate rough cut editor</span>
+    <span class="kbd-hint muted">
+      <kbd>I</kbd> Mark In &nbsp;
+      <kbd>O</kbd> Mark Out &nbsp;
+      <kbd>.</kbd> Add to Timeline &nbsp;
+      <kbd>Space</kbd> Play/Pause
+    </span>
   </div>
 
   <!-- ── Top row: Bin + Source Monitor + Program Monitor ───────────────── -->
@@ -732,6 +769,35 @@
   .editor-header h2 {
     margin: 0;
     font-size: 1.1em;
+  }
+
+  .kbd-hint {
+    margin-left: auto;
+    font-size: 0.75em;
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+    flex-wrap: wrap;
+    color: var(--text-muted, #888);
+  }
+
+  .kbd-hint span {
+    display: flex;
+    align-items: center;
+    gap: 0.2em;
+    margin-right: 0.6em;
+  }
+
+  kbd {
+    display: inline-block;
+    background: var(--bg-alt, #2a2a2a);
+    border: 1px solid var(--border, #444);
+    border-radius: 3px;
+    padding: 0.1em 0.35em;
+    font-family: monospace;
+    font-size: 0.95em;
+    color: var(--text, #e0e0e0);
+    line-height: 1.4;
   }
 
   .editor-top {
