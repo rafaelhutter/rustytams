@@ -1,20 +1,36 @@
 <script lang="ts">
-  import { onMount, onDestroy, untrack } from 'svelte';
-  import { apiGet, apiPost, apiPut, formatShortName } from '../lib/api.js';
-  import { buildFlowsQuery, buildFlowQuery, buildSegmentsQuery } from '../lib/query.js';
-  import { push, getHashParams } from '../lib/router.js';
-  import { addToast } from '../lib/toast.js';
-  import { errorMessage } from '../lib/errors.js';
-  import { parseTimerange, nanosToSeconds } from '../lib/timerange.js';
-  import { buildM3u8BlobUrl, revokeManifest, segmentDuration } from '../lib/hls.js';
-  import { FORMAT_VIDEO, fetchAllSegments, createFlowWithSource } from '../lib/ingest.js';
-  import { buildTimerangeFromNanos } from '../lib/rational.js';
-  import { extractThumbnail, clearThumbnailCache, enableThumbnailCache } from '../lib/thumbnail.js';
-  import { parsePagination } from '../lib/api.js';
-  import Spinner from '../components/Spinner.svelte';
-  import '@byomakase/omakase-player/dist/style.css';
+  import { onMount, onDestroy, untrack } from "svelte";
+  import { apiGet, apiPost, apiPut, formatShortName } from "../lib/api.js";
+  import {
+    buildFlowsQuery,
+    buildFlowQuery,
+    buildSegmentsQuery,
+  } from "../lib/query.js";
+  import { push, getHashParams } from "../lib/router.js";
+  import { addToast } from "../lib/toast.js";
+  import { errorMessage } from "../lib/errors.js";
+  import { parseTimerange, nanosToSeconds } from "../lib/timerange.js";
+  import {
+    buildM3u8BlobUrl,
+    revokeManifest,
+    segmentDuration,
+  } from "../lib/hls.js";
+  import {
+    FORMAT_VIDEO,
+    fetchAllSegments,
+    createFlowWithSource,
+  } from "../lib/ingest.js";
+  import { buildTimerangeFromNanos } from "../lib/rational.js";
+  import {
+    extractThumbnail,
+    clearThumbnailCache,
+    enableThumbnailCache,
+  } from "../lib/thumbnail.js";
+  import { parsePagination } from "../lib/api.js";
+  import Spinner from "../components/Spinner.svelte";
+  import "@byomakase/omakase-player/dist/style.css";
 
-  import type { Segment } from '../types/tams.js';
+  import type { Segment } from "../types/tams.js";
 
   // ── Types ────────────────────────────────────────────────────────────────
 
@@ -34,14 +50,18 @@
   let binNextKey: string | null = null;
   let binHasMore: boolean = $state(false);
   let binLoadingMore: boolean = $state(false);
-  let binSearch: string = $state('');
+  let binSearch: string = $state("");
   let binThumbnails: Record<string, string> = $state({});
   let binThumbFailed: Record<string, boolean> = $state({});
 
   let filteredBinFlows: any[] = $derived.by(() => {
     if (!binSearch.trim()) return allFlows;
     const q = binSearch.trim().toLowerCase();
-    return allFlows.filter(f => (f.label || '').toLowerCase().includes(q) || f.id.toLowerCase().includes(q));
+    return allFlows.filter(
+      (f) =>
+        (f.label || "").toLowerCase().includes(q) ||
+        f.id.toLowerCase().includes(q),
+    );
   });
 
   // Source monitor
@@ -78,19 +98,24 @@
   // Timeline
   let timeline: ClipEntry[] = $state([]);
   let dragSrcIdx: number | null = null;
-  let totalDuration: number = $derived(timeline.reduce((s, c) => s + c.duration, 0));
+  let totalDuration: number = $derived(
+    timeline.reduce((s, c) => s + c.duration, 0),
+  );
 
   /** Total pixel width of all clips + gaps (gap=4px) */
   let totalTrackPx: number = $derived.by(() =>
-    timeline.reduce((s: number, c: ClipEntry, i: number) =>
-      s + Math.max(80, Math.min(300, c.duration * 8)) + (i > 0 ? 4 : 0), 0)
+    timeline.reduce(
+      (s: number, c: ClipEntry, i: number) =>
+        s + Math.max(80, Math.min(300, c.duration * 8)) + (i > 0 ? 4 : 0),
+      0,
+    ),
   );
 
   /** Playhead X: non-linear, accounts for clamped clip widths */
   let playheadX: number = $derived(timeToPixel(programCurrentTime));
 
   /** Ruler tick marks */
-  let rulerTicks: Array<{px: number, label: string}> = $derived.by(() => {
+  let rulerTicks: Array<{ px: number; label: string }> = $derived.by(() => {
     if (!totalDuration || !totalTrackPx) return [];
     const candidates = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
     let interval = candidates[0];
@@ -98,7 +123,7 @@
       interval = c;
       if ((c / totalDuration) * totalTrackPx >= 80) break;
     }
-    const ticks: Array<{px: number, label: string}> = [];
+    const ticks: Array<{ px: number; label: string }> = [];
     for (let t = 0; t <= totalDuration + 0.001; t += interval) {
       const clamped = Math.min(t, totalDuration);
       ticks.push({ px: timeToPixel(clamped), label: formatSecs(clamped) });
@@ -109,10 +134,10 @@
 
   // Export
   let exporting: boolean = $state(false);
-  let exportLabel: string = $state('');
+  let exportLabel: string = $state("");
 
   // Focus tracking for keyboard shortcuts
-  type PanelId = 'bin' | 'source' | 'program' | 'timeline';
+  type PanelId = "bin" | "source" | "program" | "timeline";
   let focusedPanel: PanelId | null = $state(null);
 
   function panelBlur(e: FocusEvent): void {
@@ -124,12 +149,13 @@
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   function formatSecs(s: number): string {
-    if (!s || s < 0) return '0:00';
+    if (!s || s < 0) return "0:00";
     const h = Math.floor(s / 3600);
     const m = Math.floor((s % 3600) / 60);
     const sec = Math.floor(s % 60);
-    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
-    return `${m}:${String(sec).padStart(2, '0')}`;
+    if (h > 0)
+      return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+    return `${m}:${String(sec).padStart(2, "0")}`;
   }
 
   /** Build cumulative segment video-start times (seconds) from segment list. */
@@ -144,11 +170,18 @@
   }
 
   /** Find the segment index that the given video time falls in. */
-  function segIdxAtTime(time: number, times: number[], segs: Segment[]): number {
+  function segIdxAtTime(
+    time: number,
+    times: number[],
+    segs: Segment[],
+  ): number {
     let idx = 0;
     for (let i = 0; i < times.length; i++) {
       const dur = segmentDuration(segs[i].timerange);
-      if (time >= times[i] && time < times[i] + dur) { idx = i; break; }
+      if (time >= times[i] && time < times[i] + dur) {
+        idx = i;
+        break;
+      }
       if (i === times.length - 1) idx = i;
     }
     return idx;
@@ -164,12 +197,20 @@
   async function loadBinFlows(): Promise<void> {
     binLoading = true;
     try {
-      const resp = await apiGet(buildFlowsQuery({ format: FORMAT_VIDEO, limit: 30, includeTimerange: true }));
+      const resp = await apiGet(
+        buildFlowsQuery({
+          format: FORMAT_VIDEO,
+          limit: 30,
+          includeTimerange: true,
+        }),
+      );
       allFlows = resp.data || [];
       const pag = parsePagination(resp.headers);
       binNextKey = pag.nextKey;
       binHasMore = !!binNextKey;
-    } catch { /* ignore */ } finally {
+    } catch {
+      /* ignore */
+    } finally {
       binLoading = false;
     }
   }
@@ -178,31 +219,53 @@
     if (binLoadingMore || !binHasMore || !binNextKey) return;
     binLoadingMore = true;
     try {
-      const resp = await apiGet(buildFlowsQuery({ format: FORMAT_VIDEO, limit: 30, includeTimerange: true }, binNextKey));
+      const resp = await apiGet(
+        buildFlowsQuery(
+          { format: FORMAT_VIDEO, limit: 30, includeTimerange: true },
+          binNextKey,
+        ),
+      );
       const newFlows: any[] = resp.data || [];
       const existing = new Set(allFlows.map((f: any) => f.id));
-      allFlows = [...allFlows, ...newFlows.filter(f => !existing.has(f.id))];
+      allFlows = [...allFlows, ...newFlows.filter((f) => !existing.has(f.id))];
       const pag = parsePagination(resp.headers);
       binNextKey = pag.nextKey;
       binHasMore = !!binNextKey && newFlows.length >= 30;
-    } catch { /* ignore */ } finally {
+    } catch {
+      /* ignore */
+    } finally {
       binLoadingMore = false;
     }
   }
 
-  async function loadBinThumbnail(flow: any, signal: AbortSignal): Promise<void> {
+  async function loadBinThumbnail(
+    flow: any,
+    signal: AbortSignal,
+  ): Promise<void> {
     if (binThumbnails[flow.id] || binThumbFailed[flow.id]) return;
     try {
-      const resp = await apiGet(buildSegmentsQuery(flow.id, { limit: 3, presigned: true }));
+      const resp = await apiGet(
+        buildSegmentsQuery(flow.id, { limit: 3, presigned: true }),
+      );
       if (signal?.aborted) return;
       const segs: any[] = resp.data || [];
-      if (!segs.length) { binThumbFailed = { ...binThumbFailed, [flow.id]: true }; return; }
-      const url = await extractThumbnail({ key: flow.id, segments: segs, flow, width: 320, signal });
+      if (!segs.length) {
+        binThumbFailed = { ...binThumbFailed, [flow.id]: true };
+        return;
+      }
+      const url = await extractThumbnail({
+        key: flow.id,
+        segments: segs,
+        flow,
+        width: 320,
+        signal,
+      });
       if (signal?.aborted) return;
       if (url) binThumbnails = { ...binThumbnails, [flow.id]: url };
       else binThumbFailed = { ...binThumbFailed, [flow.id]: true };
     } catch (e) {
-      if (!signal?.aborted) binThumbFailed = { ...binThumbFailed, [flow.id]: true };
+      if (!signal?.aborted)
+        binThumbFailed = { ...binThumbFailed, [flow.id]: true };
     }
   }
 
@@ -213,31 +276,57 @@
     if (flow) loadBinThumbnail(flow, new AbortController().signal);
   }
 
-  function binLazyThumb(node: HTMLElement, flow: any): void | { destroy(): void } {
+  function binLazyThumb(
+    node: HTMLElement,
+    flow: any,
+  ): void | { destroy(): void } {
     let ctrl = new AbortController();
-    const observer = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting && !binThumbnails[flow.id] && !binThumbFailed[flow.id]) {
-        loadBinThumbnail(flow, ctrl.signal);
-      } else if (!entry.isIntersecting) {
-        ctrl.abort(); ctrl = new AbortController();
-      }
-    }, { rootMargin: '100px' });
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (
+          entry.isIntersecting &&
+          !binThumbnails[flow.id] &&
+          !binThumbFailed[flow.id]
+        ) {
+          loadBinThumbnail(flow, ctrl.signal);
+        } else if (!entry.isIntersecting) {
+          ctrl.abort();
+          ctrl = new AbortController();
+        }
+      },
+      { rootMargin: "100px" },
+    );
     observer.observe(node);
-    return { destroy() { observer.disconnect(); ctrl.abort(); } };
+    return {
+      destroy() {
+        observer.disconnect();
+        ctrl.abort();
+      },
+    };
   }
 
   function binInfiniteScroll(node: HTMLElement): { destroy(): void } {
-    const observer = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting) loadMoreBinFlows();
-    }, { rootMargin: '200px' });
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) loadMoreBinFlows();
+      },
+      { rootMargin: "200px" },
+    );
     observer.observe(node);
-    return { destroy() { observer.disconnect(); } };
+    return {
+      destroy() {
+        observer.disconnect();
+      },
+    };
   }
 
-  function addFlowToBin(_flow: any): void { /* no-op – all flows are always shown */ }
+  function addFlowToBin(_flow: any): void {
+    /* no-op – all flows are always shown */
+  }
 
-  function removeFlowFromBin(_flowId: string): void { /* no-op */ }
-
+  function removeFlowFromBin(_flowId: string): void {
+    /* no-op */
+  }
 
   async function selectBinFlow(flow: any): Promise<void> {
     if (activeFlow?.id === flow.id) return;
@@ -263,9 +352,22 @@
   // ── Source Player ────────────────────────────────────────────────────────
 
   function destroySourcePlayer(): void {
-    for (const s of sourceSubs) { try { s.unsubscribe(); } catch { /* */ } }
+    for (const s of sourceSubs) {
+      try {
+        s.unsubscribe();
+      } catch {
+        /* */
+      }
+    }
     sourceSubs = [];
-    if (sourcePlayer) { try { sourcePlayer.destroy(); } catch { /* */ } sourcePlayer = null; }
+    if (sourcePlayer) {
+      try {
+        sourcePlayer.destroy();
+      } catch {
+        /* */
+      }
+      sourcePlayer = null;
+    }
     for (const u of sourceBlobUrls) revokeManifest(u);
     sourceBlobUrls.clear();
     sourcePlayerReady = false;
@@ -275,29 +377,40 @@
   async function initSourcePlayer(container: HTMLElement): Promise<void> {
     if (!activeSegments.length) return;
     const manifestUrl = buildM3u8BlobUrl(activeSegments);
-    if (!manifestUrl) { sourceError = 'No playable segments (missing presigned URLs)'; return; }
+    if (!manifestUrl) {
+      sourceError = "No playable segments (missing presigned URLs)";
+      return;
+    }
     sourceBlobUrls.add(manifestUrl);
 
     try {
-      if (!sourceModule) sourceModule = await import('@byomakase/omakase-player');
-      container.id = 'omakase-source-monitor';
+      if (!sourceModule)
+        sourceModule = await import("@byomakase/omakase-player");
+      container.id = "omakase-source-monitor";
 
-      sourcePlayer = new sourceModule.OmakasePlayer({ playerHTMLElementId: container.id });
-      sourceSubs.push(sourcePlayer.loadVideo(manifestUrl, { protocol: 'hls' }).subscribe({
-        next: () => {
-          sourcePlayerReady = true;
-          // Track current time via observable
-          try {
-            sourceSubs.push(sourcePlayer.video.onVideoTimeChange$.subscribe((evt: any) => {
-              sourceCurrentTime = evt?.currentTime ?? 0;
-            }));
-
-          } catch { /* observable may not be available */ }
-        },
-        error: (err: any) => {
-          sourceError = `Player error: ${errorMessage(err)}`;
-        },
-      }));
+      sourcePlayer = new sourceModule.OmakasePlayer({
+        playerHTMLElementId: container.id,
+      });
+      sourceSubs.push(
+        sourcePlayer.loadVideo(manifestUrl, { protocol: "hls" }).subscribe({
+          next: () => {
+            sourcePlayerReady = true;
+            // Track current time via observable
+            try {
+              sourceSubs.push(
+                sourcePlayer.video.onVideoTimeChange$.subscribe((evt: any) => {
+                  sourceCurrentTime = evt?.currentTime ?? 0;
+                }),
+              );
+            } catch {
+              /* observable may not be available */
+            }
+          },
+          error: (err: any) => {
+            sourceError = `Player error: ${errorMessage(err)}`;
+          },
+        }),
+      );
     } catch (err) {
       sourceError = `Init failed: ${errorMessage(err)}`;
       for (const u of sourceBlobUrls) revokeManifest(u);
@@ -305,14 +418,19 @@
     }
   }
 
-  function sourcePlayerAction(node: HTMLElement, segs: Segment[]): { update(s: Segment[]): void; destroy(): void } {
+  function sourcePlayerAction(
+    node: HTMLElement,
+    segs: Segment[],
+  ): { update(s: Segment[]): void; destroy(): void } {
     if (segs.length) initSourcePlayer(node);
     return {
       update(newSegs: Segment[]) {
         destroySourcePlayer();
         if (newSegs.length) initSourcePlayer(node);
       },
-      destroy() { destroySourcePlayer(); },
+      destroy() {
+        destroySourcePlayer();
+      },
     };
   }
 
@@ -323,7 +441,7 @@
     const idx = segIdxAtTime(sourceCurrentTime, segVideoTimes, activeSegments);
     inSegIdx = idx;
     if (outSegIdx !== null && outSegIdx < idx) outSegIdx = idx;
-    addToast(`Mark In: segment ${idx + 1}/${activeSegments.length}`, 'info');
+    addToast(`Mark In: segment ${idx + 1}/${activeSegments.length}`, "info");
   }
 
   function markOut(): void {
@@ -331,14 +449,17 @@
     const idx = segIdxAtTime(sourceCurrentTime, segVideoTimes, activeSegments);
     outSegIdx = idx;
     if (inSegIdx !== null && inSegIdx > idx) inSegIdx = idx;
-    addToast(`Mark Out: segment ${idx + 1}/${activeSegments.length}`, 'info');
+    addToast(`Mark Out: segment ${idx + 1}/${activeSegments.length}`, "info");
   }
 
   function addToTimeline(): void {
     if (!activeFlow || !activeSegments.length) return;
     const from = inSegIdx ?? 0;
     const to = outSegIdx ?? activeSegments.length - 1;
-    if (from > to) { addToast('In point must be before Out point', 'error'); return; }
+    if (from > to) {
+      addToast("In point must be before Out point", "error");
+      return;
+    }
     const clipSegs = activeSegments.slice(from, to + 1);
     const dur = sumDuration(clipSegs);
     const clip: ClipEntry = {
@@ -349,23 +470,23 @@
       duration: dur,
     };
     timeline = [...timeline, clip];
-    addToast(`Added clip (${formatSecs(dur)}) to timeline`, 'success');
+    addToast(`Added clip (${formatSecs(dur)}) to timeline`, "success");
   }
 
   function removeClip(clipId: string): void {
-    timeline = timeline.filter(c => c.id !== clipId);
+    timeline = timeline.filter((c) => c.id !== clipId);
   }
 
   // ── Timeline Drag & Drop ─────────────────────────────────────────────────
 
   function onClipDragStart(e: DragEvent, idx: number): void {
     dragSrcIdx = idx;
-    e.dataTransfer!.effectAllowed = 'move';
+    e.dataTransfer!.effectAllowed = "move";
   }
 
   function onClipDragOver(e: DragEvent): void {
     e.preventDefault();
-    e.dataTransfer!.dropEffect = 'move';
+    e.dataTransfer!.dropEffect = "move";
   }
 
   function onClipDrop(e: DragEvent, targetIdx: number): void {
@@ -381,9 +502,22 @@
   // ── Program Monitor ──────────────────────────────────────────────────────
 
   function destroyProgramPlayer(): void {
-    for (const s of programSubs) { try { s.unsubscribe(); } catch { /* */ } }
+    for (const s of programSubs) {
+      try {
+        s.unsubscribe();
+      } catch {
+        /* */
+      }
+    }
     programSubs = [];
-    if (programPlayer) { try { programPlayer.destroy(); } catch { /* */ } programPlayer = null; }
+    if (programPlayer) {
+      try {
+        programPlayer.destroy();
+      } catch {
+        /* */
+      }
+      programPlayer = null;
+    }
     for (const u of programBlobUrls) revokeManifest(u);
     programBlobUrls.clear();
     programPlayerReady = false;
@@ -391,44 +525,63 @@
   }
 
   async function buildProgramPreview(): Promise<void> {
-    if (!timeline.length) { addToast('Timeline is empty', 'error'); return; }
+    if (!timeline.length) {
+      addToast("Timeline is empty", "error");
+      return;
+    }
     destroyProgramPlayer();
     programBuilding = true;
 
-    const container = document.getElementById('omakase-program-monitor');
-    if (!container) { programBuilding = false; return; }
+    const container = document.getElementById("omakase-program-monitor");
+    if (!container) {
+      programBuilding = false;
+      return;
+    }
 
     // Flat segment list from all clips in order
-    const allSegs: Segment[] = timeline.flatMap(c => c.segments);
+    const allSegs: Segment[] = timeline.flatMap((c) => c.segments);
     const manifestUrl = buildM3u8BlobUrl(allSegs);
     if (!manifestUrl) {
-      addToast('No playable segments in timeline (missing presigned URLs)', 'error');
+      addToast(
+        "No playable segments in timeline (missing presigned URLs)",
+        "error",
+      );
       programBuilding = false;
       return;
     }
     programBlobUrls.add(manifestUrl);
 
     try {
-      if (!sourceModule) sourceModule = await import('@byomakase/omakase-player');
+      if (!sourceModule)
+        sourceModule = await import("@byomakase/omakase-player");
       // Program player shares module with source player
 
-      programPlayer = new sourceModule.OmakasePlayer({ playerHTMLElementId: 'omakase-program-monitor' });
+      programPlayer = new sourceModule.OmakasePlayer({
+        playerHTMLElementId: "omakase-program-monitor",
+      });
 
       // Subscribe to time changes immediately (before loadVideo) so playback updates are captured
-      programSubs.push(programPlayer.video.onVideoTimeChange$.subscribe({
-        next: (ev: any) => {
-          programCurrentTime = ev.currentTime;
-          autoScrollPlayhead();
-        }
-      }));
+      programSubs.push(
+        programPlayer.video.onVideoTimeChange$.subscribe({
+          next: (ev: any) => {
+            programCurrentTime = ev.currentTime;
+            autoScrollPlayhead();
+          },
+        }),
+      );
 
-
-      programSubs.push(programPlayer.loadVideo(manifestUrl, { protocol: 'hls' }).subscribe({
-        next: () => { programPlayerReady = true; },
-        error: (err: any) => { addToast(`Program player error: ${errorMessage(err)}`, 'error'); },
-      }));
+      programSubs.push(
+        programPlayer.loadVideo(manifestUrl, { protocol: "hls" }).subscribe({
+          next: () => {
+            programPlayerReady = true;
+          },
+          error: (err: any) => {
+            addToast(`Program player error: ${errorMessage(err)}`, "error");
+          },
+        }),
+      );
     } catch (err) {
-      addToast(`Program player init failed: ${errorMessage(err)}`, 'error');
+      addToast(`Program player init failed: ${errorMessage(err)}`, "error");
       for (const u of programBlobUrls) revokeManifest(u);
       programBlobUrls.clear();
     } finally {
@@ -439,9 +592,14 @@
   // ── Export ───────────────────────────────────────────────────────────────
 
   async function exportRoughCut(): Promise<void> {
-    if (!timeline.length) { addToast('Timeline is empty', 'error'); return; }
+    if (!timeline.length) {
+      addToast("Timeline is empty", "error");
+      return;
+    }
     exporting = true;
-    const label = exportLabel.trim() || `Rough Cut ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
+    const label =
+      exportLabel.trim() ||
+      `Rough Cut ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
     try {
       const videoFlowId = crypto.randomUUID();
       const videoSourceId = crypto.randomUUID();
@@ -452,7 +610,9 @@
       try {
         const resp = await apiGet(buildFlowQuery(templateFlowId, {}));
         templateFlow = resp.data;
-      } catch { /* use defaults */ }
+      } catch {
+        /* use defaults */
+      }
 
       await createFlowWithSource({
         sourceId: videoSourceId,
@@ -466,8 +626,8 @@
         sourceDescription: `Rough cut from ${timeline.length} clip(s)`,
       });
 
-      await apiPut(`/flows/${videoFlowId}/tags/edit_export`, ['true']);
-      await apiPut(`/flows/${videoFlowId}/tags/rough_cut`, ['true']);
+      await apiPut(`/flows/${videoFlowId}/tags/edit_export`, ["true"]);
+      await apiPut(`/flows/${videoFlowId}/tags/rough_cut`, ["true"]);
 
       // Register segments with re-based contiguous timeranges starting at 0
       const NANOS = 1_000_000_000n;
@@ -478,12 +638,17 @@
         for (const seg of clip.segments) {
           const tr = parseTimerange(seg.timerange);
           let durNanos: bigint;
-          if (tr.type !== 'never' && tr.start && tr.end) {
+          if (tr.type !== "never" && tr.start && tr.end) {
             durNanos = tr.end.nanos - tr.start.nanos;
           } else {
-            durNanos = BigInt(Math.round(segmentDuration(seg.timerange) * Number(NANOS)));
+            durNanos = BigInt(
+              Math.round(segmentDuration(seg.timerange) * Number(NANOS)),
+            );
           }
-          const newTimerange = buildTimerangeFromNanos(offsetNanos, offsetNanos + durNanos);
+          const newTimerange = buildTimerangeFromNanos(
+            offsetNanos,
+            offsetNanos + durNanos,
+          );
           try {
             await apiPost(`/flows/${videoFlowId}/segments`, {
               object_id: seg.object_id,
@@ -491,19 +656,20 @@
             });
             offsetNanos += durNanos;
           } catch (err) {
-            console.warn('[export] segment failed:', err);
+            console.warn("[export] segment failed:", err);
             failed++;
             offsetNanos += durNanos;
           }
         }
       }
 
-      const msg = `Rough cut exported: ${timeline.reduce((s, c) => s + c.segments.length, 0)} segments` +
-        (failed ? ` (${failed} failed)` : '');
-      addToast(msg, failed ? 'warning' : 'success');
+      const msg =
+        `Rough cut exported: ${timeline.reduce((s, c) => s + c.segments.length, 0)} segments` +
+        (failed ? ` (${failed} failed)` : "");
+      addToast(msg, failed ? "warning" : "success");
       push(`/player/${videoFlowId}`);
     } catch (err) {
-      addToast(`Export failed: ${errorMessage(err)}`, 'error');
+      addToast(`Export failed: ${errorMessage(err)}`, "error");
     } finally {
       exporting = false;
     }
@@ -517,14 +683,16 @@
 
     // If launched from Gallery with a flowId param, load it into the source monitor
     const params = getHashParams();
-    const flowId = params.get('flowId');
+    const flowId = params.get("flowId");
     if (flowId) {
       apiGet(buildFlowQuery(flowId, { includeTimerange: true }))
         .then((resp: any) => {
           const flow = resp.data;
           if (flow) selectBinFlow(flow);
         })
-        .catch(() => { /* ignore */ });
+        .catch(() => {
+          /* ignore */
+        });
     }
   });
 
@@ -541,8 +709,12 @@
   });
 
   // Labels for in/out points
-  let inLabel: string = $derived(inSegIdx !== null ? `Seg ${inSegIdx + 1}` : '--');
-  let outLabel: string = $derived(outSegIdx !== null ? `Seg ${outSegIdx + 1}` : '--');
+  let inLabel: string = $derived(
+    inSegIdx !== null ? `Seg ${inSegIdx + 1}` : "--",
+  );
+  let outLabel: string = $derived(
+    outSegIdx !== null ? `Seg ${outSegIdx + 1}` : "--",
+  );
   let clipDuration: number = $derived.by(() => {
     if (!activeSegments.length) return 0;
     const from = inSegIdx ?? 0;
@@ -556,7 +728,10 @@
   $effect(() => {
     const t = timeline; // track reactively
     if (_previewDebounce) clearTimeout(_previewDebounce);
-    if (!t.length) { destroyProgramPlayer(); return; }
+    if (!t.length) {
+      destroyProgramPlayer();
+      return;
+    }
     _previewDebounce = setTimeout(() => buildProgramPreview(), 300);
   });
 
@@ -578,8 +753,8 @@
     e.preventDefault();
     e.stopPropagation();
     playheadDragging = true;
-    window.addEventListener('mousemove', onPlayheadMouseMove);
-    window.addEventListener('mouseup', onPlayheadMouseUp, { once: true });
+    window.addEventListener("mousemove", onPlayheadMouseMove);
+    window.addEventListener("mouseup", onPlayheadMouseUp, { once: true });
   }
 
   function onPlayheadMouseMove(e: MouseEvent): void {
@@ -589,12 +764,12 @@
 
   function onPlayheadMouseUp(): void {
     playheadDragging = false;
-    window.removeEventListener('mousemove', onPlayheadMouseMove);
+    window.removeEventListener("mousemove", onPlayheadMouseMove);
   }
 
   function onTrackClick(e: MouseEvent): void {
     const target = e.target as HTMLElement;
-    if (target.closest('.timeline-clip') || target.closest('.playhead')) return;
+    if (target.closest(".timeline-clip") || target.closest(".playhead")) return;
     seekProgramToX(e.clientX);
   }
 
@@ -617,7 +792,8 @@
       const dur = timeline[i].duration;
       const w = Math.max(80, Math.min(300, dur * 8));
       if (elapsed + dur >= t || i === timeline.length - 1) {
-        const frac = dur > 0 ? Math.min(1, Math.max(0, (t - elapsed) / dur)) : 0;
+        const frac =
+          dur > 0 ? Math.min(1, Math.max(0, (t - elapsed) / dur)) : 0;
         return px + frac * w;
       }
       px += w + 4;
@@ -646,33 +822,37 @@
   function handleKeydown(e: KeyboardEvent): void {
     // Don't fire when typing in an input/textarea
     const tag = (e.target as HTMLElement)?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
     switch (e.key) {
-      case 'i':
-      case 'I':
+      case "i":
+      case "I":
         e.preventDefault();
         markIn();
         break;
-      case 'o':
-      case 'O':
+      case "o":
+      case "O":
         e.preventDefault();
         markOut();
         break;
-      case '.':
+      case ".":
         e.preventDefault();
         addToTimeline();
         break;
-      case ' ':
+      case " ":
         e.preventDefault();
-        if (focusedPanel === 'program' || focusedPanel === 'timeline') {
+        if (focusedPanel === "program" || focusedPanel === "timeline") {
           try {
             programPlayer?.video?.togglePlayPause();
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
         } else {
           try {
             sourcePlayer?.video?.togglePlayPause();
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
         }
         break;
     }
@@ -684,7 +864,9 @@
 <div class="editor-page">
   <div class="editor-header">
     <h2>✂ Editor</h2>
-    <span class="muted" style="font-size:0.85em">Segment-accurate rough cut editor</span>
+    <span class="muted" style="font-size:0.85em"
+      >Segment-accurate rough cut editor</span
+    >
     <span class="kbd-hint muted">
       <kbd>I</kbd> Mark In &nbsp;
       <kbd>O</kbd> Mark Out &nbsp;
@@ -695,13 +877,12 @@
 
   <!-- ── Top row: Bin + Source Monitor + Program Monitor ───────────────── -->
   <div class="editor-top">
-
     <!-- Bin Panel -->
     <div
       class="bin-panel panel"
-      class:focused={focusedPanel === 'bin'}
+      class:focused={focusedPanel === "bin"}
       tabindex="-1"
-      onfocus={() => focusedPanel = 'bin'}
+      onfocus={() => (focusedPanel = "bin")}
       onblur={panelBlur}
       role="region"
       aria-label="Bin"
@@ -738,7 +919,9 @@
                   <span class="thumb-icon"><Spinner size="0.8em" /></span>
                 {/if}
               </div>
-              <div class="bin-card-label">{flow.label || flow.id.slice(0, 8)}</div>
+              <div class="bin-card-label">
+                {flow.label || flow.id.slice(0, 8)}
+              </div>
             </button>
           {/each}
           {#if binHasMore}
@@ -751,9 +934,9 @@
     <!-- Source Monitor -->
     <div
       class="monitor-panel panel"
-      class:focused={focusedPanel === 'source'}
+      class:focused={focusedPanel === "source"}
       tabindex="-1"
-      onfocus={() => focusedPanel = 'source'}
+      onfocus={() => (focusedPanel = "source")}
       onblur={panelBlur}
       role="region"
       aria-label="Source Monitor"
@@ -761,7 +944,9 @@
       <h3 class="panel-title">
         Source Monitor
         {#if activeFlow}
-          <span class="muted"> — {activeFlow.label || activeFlow.id.slice(0, 8)}</span>
+          <span class="muted">
+            — {activeFlow.label || activeFlow.id.slice(0, 8)}</span
+          >
         {/if}
       </h3>
 
@@ -785,31 +970,48 @@
       <!-- Mark In / Out controls -->
       <div class="monitor-controls">
         <div class="mark-points">
-          <button class="btn-mark" onclick={markIn} disabled={!sourcePlayerReady} title="Mark In at current segment">
+          <button
+            class="btn-mark"
+            onclick={markIn}
+            disabled={!sourcePlayerReady}
+            title="Mark In at current segment"
+          >
             ◀ Mark In
           </button>
           <span class="mark-label">{inLabel}</span>
           <span class="mark-sep">→</span>
           <span class="mark-label">{outLabel}</span>
-          <button class="btn-mark" onclick={markOut} disabled={!sourcePlayerReady} title="Mark Out at current segment">
+          <button
+            class="btn-mark"
+            onclick={markOut}
+            disabled={!sourcePlayerReady}
+            title="Mark Out at current segment"
+          >
             Mark Out ▶
           </button>
         </div>
         <div class="add-row">
           {#if clipDuration > 0}
-            <span class="muted" style="font-size:0.8em">{formatSecs(clipDuration)}</span>
+            <span class="muted" style="font-size:0.8em"
+              >{formatSecs(clipDuration)}</span
+            >
           {/if}
           <button
             class="primary btn-add-clip"
             onclick={addToTimeline}
             disabled={!sourcePlayerReady || !activeSegments.length}
-            title={inSegIdx === null && outSegIdx === null ? 'Add entire clip to timeline' : 'Add marked range to timeline'}
+            title={inSegIdx === null && outSegIdx === null
+              ? "Add entire clip to timeline"
+              : "Add marked range to timeline"}
           >
             ➕ Add to Timeline
           </button>
           <button
             class="btn-small"
-            onclick={() => { inSegIdx = null; outSegIdx = null; }}
+            onclick={() => {
+              inSegIdx = null;
+              outSegIdx = null;
+            }}
             disabled={inSegIdx === null && outSegIdx === null}
             title="Clear in/out points"
           >
@@ -831,9 +1033,9 @@
     <!-- Program Monitor -->
     <div
       class="monitor-panel panel"
-      class:focused={focusedPanel === 'program'}
+      class:focused={focusedPanel === "program"}
       tabindex="-1"
-      onfocus={() => focusedPanel = 'program'}
+      onfocus={() => (focusedPanel = "program")}
       onblur={panelBlur}
       role="region"
       aria-label="Program Monitor"
@@ -844,7 +1046,9 @@
         {#if programBuilding}
           <div class="player-placeholder"><Spinner /> Building preview…</div>
         {:else if timeline.length === 0}
-          <div class="player-placeholder muted">Add clips to the timeline to preview</div>
+          <div class="player-placeholder muted">
+            Add clips to the timeline to preview
+          </div>
         {:else}
           <div id="omakase-program-monitor" class="omakase-container"></div>
         {/if}
@@ -870,7 +1074,7 @@
           onclick={exportRoughCut}
           disabled={exporting || timeline.length === 0}
         >
-          {exporting ? 'Exporting…' : '💾 Export Rough Cut'}
+          {exporting ? "Exporting…" : "💾 Export Rough Cut"}
         </button>
       </div>
     </div>
@@ -879,9 +1083,9 @@
   <!-- ── Timeline ──────────────────────────────────────────────────────── -->
   <div
     class="timeline-panel panel"
-    class:focused={focusedPanel === 'timeline'}
+    class:focused={focusedPanel === "timeline"}
     tabindex="-1"
-    onfocus={() => focusedPanel = 'timeline'}
+    onfocus={() => (focusedPanel = "timeline")}
     onblur={panelBlur}
     role="region"
     aria-label="Timeline"
@@ -892,14 +1096,16 @@
         {timeline.length} clip(s) · {formatSecs(totalDuration)}
       </span>
       {#if timeline.length > 0}
-        <button class="btn-small danger" onclick={() => timeline = []}>Clear all</button>
+        <button class="btn-small danger" onclick={() => (timeline = [])}
+          >Clear all</button
+        >
       {/if}
     </div>
 
     {#if timeline.length === 0}
       <p class="muted" style="padding:1em 0;font-size:0.85em">
-        Mark In/Out in the Source Monitor and click "Add to Timeline".
-        Drag clips to reorder.
+        Mark In/Out in the Source Monitor and click "Add to Timeline". Drag
+        clips to reorder.
       </p>
     {:else}
       <div
@@ -934,21 +1140,30 @@
                 role="listitem"
               >
                 {#if thumb}
-                  <div class="clip-thumb" style="background-image:url('{thumb}')"></div>
+                  <div
+                    class="clip-thumb"
+                    style="background-image:url('{thumb}')"
+                  ></div>
                 {/if}
                 <div class="clip-body">
-                  <div class="clip-label" title="{clip.flowLabel} ({clip.segments.length} segs)">
+                  <div
+                    class="clip-label"
+                    title="{clip.flowLabel} ({clip.segments.length} segs)"
+                  >
                     {clip.flowLabel}
                   </div>
                   <div class="clip-meta">
-                    {formatSecs(clip.duration)} · {clip.segments.length} seg{clip.segments.length !== 1 ? 's' : ''}
+                    {formatSecs(clip.duration)} · {clip.segments.length} seg{clip
+                      .segments.length !== 1
+                      ? "s"
+                      : ""}
                   </div>
                 </div>
                 <button
                   class="clip-remove"
                   onclick={() => removeClip(clip.id)}
-                  title="Remove clip"
-                >✕</button>
+                  title="Remove clip">✕</button
+                >
               </div>
             {/each}
           </div>
@@ -1042,7 +1257,9 @@
     flex-direction: column;
     overflow: hidden;
     outline: none;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    transition:
+      border-color 0.15s ease,
+      box-shadow 0.15s ease;
   }
 
   .panel.focused {
@@ -1062,8 +1279,8 @@
 
   /* Bin */
   .bin-panel {
-    overflow: hidden;
     gap: 0.4em;
+    max-height: 64vh;
   }
 
   .bin-filter-input {
@@ -1101,11 +1318,17 @@
     flex-direction: column;
     text-align: left;
     padding: 0;
+    height: 70px;
     transition: border-color 0.15s;
   }
 
-  .bin-card:hover { border-color: var(--accent, #5a9fd4); }
-  .bin-card.active { border-color: var(--accent, #5a9fd4); box-shadow: 0 0 0 1px var(--accent, #5a9fd4); }
+  .bin-card:hover {
+    border-color: var(--accent, #5a9fd4);
+  }
+  .bin-card.active {
+    border-color: var(--accent, #5a9fd4);
+    box-shadow: 0 0 0 1px var(--accent, #5a9fd4);
+  }
 
   .bin-card-thumb {
     width: 100%;
@@ -1148,6 +1371,7 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    max-height: 64vh;
   }
 
   .player-wrapper {
@@ -1201,8 +1425,13 @@
     cursor: pointer;
   }
 
-  .btn-mark:hover:not(:disabled) { border-color: var(--accent, #5a9fd4); }
-  .btn-mark:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-mark:hover:not(:disabled) {
+    border-color: var(--accent, #5a9fd4);
+  }
+  .btn-mark:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
 
   .mark-label {
     font-family: monospace;
@@ -1212,7 +1441,10 @@
     text-align: center;
   }
 
-  .mark-sep { color: var(--text-muted, #888); font-size: 0.8em; }
+  .mark-sep {
+    color: var(--text-muted, #888);
+    font-size: 0.8em;
+  }
 
   .add-row {
     display: flex;
@@ -1255,15 +1487,21 @@
     white-space: nowrap;
   }
 
-  .btn-export:hover:not(:disabled) { filter: brightness(1.15); }
-  .btn-export:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-export:hover:not(:disabled) {
+    filter: brightness(1.15);
+  }
+  .btn-export:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
 
   /* Timeline */
   .timeline-panel {
     flex-shrink: 0;
     margin: 0 0.75em 0.75em;
     min-height: 120px;
-    max-height: 160px;
+    max-height: 300px;
+    height: 22vh;
   }
 
   .timeline-header {
@@ -1284,10 +1522,18 @@
     cursor: pointer;
   }
 
-  .btn-small:hover:not(:disabled) { border-color: var(--accent, #5a9fd4); }
-  .btn-small:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-small:hover:not(:disabled) {
+    border-color: var(--accent, #5a9fd4);
+  }
+  .btn-small:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
 
-  .btn-small.danger:hover { border-color: var(--error, #c0392b); color: var(--error, #c0392b); }
+  .btn-small.danger:hover {
+    border-color: var(--error, #c0392b);
+    color: var(--error, #c0392b);
+  }
 
   /* Timeline scroll container */
   .timeline-scroll-area {
@@ -1299,9 +1545,18 @@
     cursor: default;
   }
 
-  .timeline-scroll-area::-webkit-scrollbar { height: 5px; }
-  .timeline-scroll-area::-webkit-scrollbar-track { background: #1a2530; border-radius: 3px; }
-  .timeline-scroll-area::-webkit-scrollbar-thumb { background: #3a5a7a; border-radius: 3px; }
+  ::-webkit-scrollbar {
+    height: 5px;
+    width: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #1a2530;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #3a5a7a;
+    border-radius: 3px;
+  }
 
   /* Inner content — full track width, position:relative for playhead */
   .timeline-inner {
@@ -1331,7 +1586,7 @@
   }
 
   .ruler-tick::before {
-    content: '';
+    content: "";
     width: 1px;
     height: 5px;
     background: #4a7a9a;
@@ -1369,7 +1624,9 @@
     overflow: hidden;
   }
 
-  .timeline-clip:active { cursor: grabbing; }
+  .timeline-clip:active {
+    cursor: grabbing;
+  }
 
   /* Thumbnail: fixed 16:9 box on the left */
   .clip-thumb {
@@ -1380,7 +1637,7 @@
     background-repeat: no-repeat;
     background-position: center;
     background-color: #0d1a26;
-    border-right: 1px solid rgba(90,159,212,0.25);
+    border-right: 1px solid rgba(90, 159, 212, 0.25);
   }
 
   /* Body: text fills remaining space with matching dark-blue bg */
@@ -1422,7 +1679,9 @@
     padding: 0;
   }
 
-  .clip-remove:hover { color: var(--error, #c0392b); }
+  .clip-remove:hover {
+    color: var(--error, #c0392b);
+  }
 
   /* Playhead */
   .playhead {
@@ -1439,7 +1698,7 @@
 
   /* Triangle handle at top of ruler */
   .playhead::before {
-    content: '';
+    content: "";
     position: absolute;
     top: 0;
     left: 50%;
