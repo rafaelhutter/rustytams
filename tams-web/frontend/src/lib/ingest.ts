@@ -72,7 +72,7 @@ export const AUDIO_QUALITY_PRESETS: AudioQualityPreset[] = [
 ];
 
 /** Allowed segment duration values in seconds. */
-export const SEGMENT_DURATION_OPTIONS: number[] = [2, 4, 6, 8, 10, 15, 30];
+export const SEGMENT_DURATION_OPTIONS: number[] = [1, 2, 4, 6, 8, 10, 15, 30];
 
 /** Allowed keyframe interval values in seconds. */
 export const KEYFRAME_INTERVAL_OPTIONS: number[] = [0.5, 1, 2, 4];
