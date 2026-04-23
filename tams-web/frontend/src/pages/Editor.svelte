@@ -288,10 +288,10 @@
           sourcePlayerReady = true;
           // Track current time via observable
           try {
-            const sub = sourcePlayer.video.onVideoTimeChange$.subscribe((evt: any) => {
+            sourceSubs.push(sourcePlayer.video.onVideoTimeChange$.subscribe((evt: any) => {
               sourceCurrentTime = evt?.currentTime ?? 0;
-            });
-            sourceSubs.push(sub);
+            }));
+
           } catch { /* observable may not be available */ }
         },
         error: (err: any) => {
@@ -421,6 +421,7 @@
           autoScrollPlayhead();
         }
       }));
+
 
       programSubs.push(programPlayer.loadVideo(manifestUrl, { protocol: 'hls' }).subscribe({
         next: () => { programPlayerReady = true; },
@@ -663,11 +664,11 @@
         e.preventDefault();
         if (focusedPanel === 'program' || focusedPanel === 'timeline') {
           try {
-            programPlayer?.video?.paused ? programPlayer.video.play() : programPlayer?.video?.pause();
+            programPlayer?.video?.togglePlayPause();
           } catch { /* ignore */ }
         } else {
           try {
-            sourcePlayer?.video?.paused ? sourcePlayer.video.play() : sourcePlayer?.video?.pause();
+            sourcePlayer?.video?.togglePlayPause();
           } catch { /* ignore */ }
         }
         break;
