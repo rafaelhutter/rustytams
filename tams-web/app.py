@@ -16,14 +16,23 @@ app = Flask(__name__, static_folder=None)
 
 DEFAULT_TITLE = "RustyTAMS"
 DEFAULT_LOGO_URL = "/logo.png"
+DEFAULT_SEGMENT_DURATION = 6
 
 
 @app.route("/api/config")
 def config():
-    """Return runtime UI configuration (title, logo URL) from environment variables."""
+    """Return runtime UI configuration (title, logo URL, defaults) from environment variables."""
+    raw = os.environ.get("TAMS_DEFAULT_SEGMENT_DURATION", str(DEFAULT_SEGMENT_DURATION))
+    try:
+        segment_duration = float(raw)
+        if segment_duration <= 0:
+            segment_duration = DEFAULT_SEGMENT_DURATION
+    except ValueError:
+        segment_duration = DEFAULT_SEGMENT_DURATION
     return jsonify(
         title=os.environ.get("TAMS_TITLE", DEFAULT_TITLE),
         logoUrl=os.environ.get("TAMS_LOGO_URL", DEFAULT_LOGO_URL),
+        defaultSegmentDuration=segment_duration,
     )
 
 

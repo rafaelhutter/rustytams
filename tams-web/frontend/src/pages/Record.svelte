@@ -11,7 +11,7 @@
     VIDEO_QUALITY_PRESETS, AUDIO_QUALITY_PRESETS,
     SEGMENT_DURATION_OPTIONS, KEYFRAME_INTERVAL_OPTIONS, FRAME_RATE_OPTIONS,
     getFrameRate, resolveKeyFrameInterval,
-    loadIngestSettings, saveIngestSettings,
+    loadIngestSettings, saveIngestSettings, fetchDefaultSegmentDuration,
   } from '../lib/ingest.js';
   import { formatSeconds } from '../lib/playerUtils.js';
   import Spinner from '../components/Spinner.svelte';
@@ -226,6 +226,13 @@
     else if (webCodecsCheck?.supported && mode === 'upload') selectUpload();
     // Async codec capability check — non-blocking, populates codecSupport
     probeCodecSupport();
+    // Apply server-configured default segment duration only if user has no saved preference
+    const hasSaved = !!localStorage.getItem('tams-ingest-settings');
+    if (!hasSaved) {
+      fetchDefaultSegmentDuration().then(dur => {
+        settings = { ...settings, segmentDuration: dur };
+      });
+    }
     return () => cleanup();
   });
 

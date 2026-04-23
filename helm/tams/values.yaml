@@ -69,6 +69,7 @@ resources:
 web:
   title: "RustyTAMS" # Page title and logo alt text
   logoUrl: "/logo.png" # URL of the logo image (can be an external https:// URL)
+  defaultSegmentDuration: 6 # Default segment size in seconds for upload/recording (any positive float, e.g. 2.5)
 
 # -- MongoDB URI (wird per --set mongoUri=... gesetzt, nie in Git committen) ---
 mongoUri: ""

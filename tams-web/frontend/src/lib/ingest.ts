@@ -130,6 +130,22 @@ export const DEFAULT_INGEST_SETTINGS: IngestSettings = {
   keyFrameInterval: 1,
 };
 
+/**
+ * Fetch the server-configured default segment duration from /api/config.
+ * Falls back to DEFAULT_INGEST_SETTINGS.segmentDuration if unavailable.
+ */
+export async function fetchDefaultSegmentDuration(): Promise<number> {
+  try {
+    const res = await fetch('/api/config');
+    if (!res.ok) return DEFAULT_INGEST_SETTINGS.segmentDuration;
+    const cfg = await res.json();
+    const val = Number(cfg.defaultSegmentDuration);
+    return (Number.isFinite(val) && val > 0) ? val : DEFAULT_INGEST_SETTINGS.segmentDuration;
+  } catch {
+    return DEFAULT_INGEST_SETTINGS.segmentDuration;
+  }
+}
+
 /** Load persisted ingest settings from localStorage, merged with defaults. */
 export function loadIngestSettings(): IngestSettings {
   try {
