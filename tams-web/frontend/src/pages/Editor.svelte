@@ -662,10 +662,13 @@
       case ' ':
         e.preventDefault();
         if (focusedPanel === 'program' || focusedPanel === 'timeline') {
-          try { programPlayer?.video?.play(); } catch { /* ignore */ }
+          try {
+            programPlayer?.video?.paused ? programPlayer.video.play() : programPlayer?.video?.pause();
+          } catch { /* ignore */ }
         } else {
-          // source or unfocused → source player
-          try { sourcePlayer?.video?.play(); } catch { /* ignore */ }
+          try {
+            sourcePlayer?.video?.paused ? sourcePlayer.video.play() : sourcePlayer?.video?.pause();
+          } catch { /* ignore */ }
         }
         break;
     }
