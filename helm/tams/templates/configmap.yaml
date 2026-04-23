@@ -10,4 +10,3 @@ data:
   AUTH_URL: "http://tams-auth:5802"
   TAMS_TITLE: {{ .Values.web.title | default "RustyTAMS" | quote }}
   TAMS_LOGO_URL: {{ .Values.web.logoUrl | default "/logo.png" | quote }}
-  TAMS_DEFAULT_SEGMENT_DURATION: {{ .Values.web.defaultSegmentDuration | default 6 | quote }}
