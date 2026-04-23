@@ -111,6 +111,16 @@
   let exporting: boolean = $state(false);
   let exportLabel: string = $state('');
 
+  // Focus tracking for keyboard shortcuts
+  type PanelId = 'bin' | 'source' | 'program' | 'timeline';
+  let focusedPanel: PanelId | null = $state(null);
+
+  function panelBlur(e: FocusEvent): void {
+    const curr = e.currentTarget as HTMLElement;
+    const next = e.relatedTarget as Node | null;
+    if (!next || !curr.contains(next)) focusedPanel = null;
+  }
+
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   function formatSecs(s: number): string {
@@ -651,8 +661,12 @@
         break;
       case ' ':
         e.preventDefault();
-        // Toggle play/pause on whichever player was last used
-        try { sourcePlayer?.video?.play(); } catch { /* ignore */ }
+        if (focusedPanel === 'program' || focusedPanel === 'timeline') {
+          try { programPlayer?.video?.play(); } catch { /* ignore */ }
+        } else {
+          // source or unfocused → source player
+          try { sourcePlayer?.video?.play(); } catch { /* ignore */ }
+        }
         break;
     }
   }
@@ -676,7 +690,15 @@
   <div class="editor-top">
 
     <!-- Bin Panel -->
-    <div class="bin-panel panel">
+    <div
+      class="bin-panel panel"
+      class:focused={focusedPanel === 'bin'}
+      tabindex="-1"
+      onfocus={() => focusedPanel = 'bin'}
+      onblur={panelBlur}
+      role="region"
+      aria-label="Bin"
+    >
       <h3 class="panel-title">Bin</h3>
 
       <input
@@ -720,7 +742,15 @@
     </div>
 
     <!-- Source Monitor -->
-    <div class="monitor-panel panel">
+    <div
+      class="monitor-panel panel"
+      class:focused={focusedPanel === 'source'}
+      tabindex="-1"
+      onfocus={() => focusedPanel = 'source'}
+      onblur={panelBlur}
+      role="region"
+      aria-label="Source Monitor"
+    >
       <h3 class="panel-title">
         Source Monitor
         {#if activeFlow}
@@ -791,7 +821,15 @@
     </div>
 
     <!-- Program Monitor -->
-    <div class="monitor-panel panel">
+    <div
+      class="monitor-panel panel"
+      class:focused={focusedPanel === 'program'}
+      tabindex="-1"
+      onfocus={() => focusedPanel = 'program'}
+      onblur={panelBlur}
+      role="region"
+      aria-label="Program Monitor"
+    >
       <h3 class="panel-title">Program Monitor</h3>
 
       <div class="player-wrapper">
@@ -831,7 +869,15 @@
   </div>
 
   <!-- ── Timeline ──────────────────────────────────────────────────────── -->
-  <div class="timeline-panel panel">
+  <div
+    class="timeline-panel panel"
+    class:focused={focusedPanel === 'timeline'}
+    tabindex="-1"
+    onfocus={() => focusedPanel = 'timeline'}
+    onblur={panelBlur}
+    role="region"
+    aria-label="Timeline"
+  >
     <div class="timeline-header">
       <h3 class="panel-title" style="margin:0">Timeline</h3>
       <span class="muted" style="font-size:0.85em">
@@ -981,12 +1027,19 @@
 
   .panel {
     background: var(--panel);
-    border: 1px solid var(--border);
+    border: 1px solid rgba(255, 255, 255, 0.07);
     border-radius: 6px;
     padding: 0.75em;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .panel.focused {
+    border-color: rgba(90, 159, 212, 0.55);
+    box-shadow: 0 0 0 1px rgba(90, 159, 212, 0.18);
   }
 
   .panel-title {
