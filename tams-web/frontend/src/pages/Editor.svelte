@@ -544,8 +544,11 @@
   let inLabel: string = $derived(inSegIdx !== null ? `Seg ${inSegIdx + 1}` : '--');
   let outLabel: string = $derived(outSegIdx !== null ? `Seg ${outSegIdx + 1}` : '--');
   let clipDuration: number = $derived.by(() => {
-    if (inSegIdx === null || outSegIdx === null || inSegIdx > outSegIdx) return 0;
-    return sumDuration(activeSegments.slice(inSegIdx, outSegIdx + 1));
+    if (!activeSegments.length) return 0;
+    const from = inSegIdx ?? 0;
+    const to = outSegIdx ?? activeSegments.length - 1;
+    if (from > to) return 0;
+    return sumDuration(activeSegments.slice(from, to + 1));
   });
 
   // Auto-rebuild program preview whenever timeline changes (debounced 300ms)
@@ -799,7 +802,8 @@
           <button
             class="primary btn-add-clip"
             onclick={addToTimeline}
-            disabled={!sourcePlayerReady || inSegIdx === null || outSegIdx === null}
+            disabled={!sourcePlayerReady || !activeSegments.length}
+            title={inSegIdx === null && outSegIdx === null ? 'Add entire clip to timeline' : 'Add marked range to timeline'}
           >
             ➕ Add to Timeline
           </button>
