@@ -72,7 +72,7 @@
   let programBlobUrls: Set<string> = new Set();
 
   // Timeline playhead
-  let timelineTrackEl: HTMLElement | null = $state(null);
+  let timelineScrollEl: HTMLElement | null = $state(null);
   let playheadDragging: boolean = false;
 
   // Timeline
@@ -80,18 +80,31 @@
   let dragSrcIdx: number | null = null;
   let totalDuration: number = $derived(timeline.reduce((s, c) => s + c.duration, 0));
 
-  /** Clip widths array (same formula as template) — for playhead position calc */
-  let clipWidths: number[] = $derived(timeline.map((c: ClipEntry) => Math.max(80, Math.min(300, c.duration * 8))));
-
   /** Total pixel width of all clips + gaps (gap=4px) */
-  let totalTrackPx: number = $derived(
-    (clipWidths as number[]).reduce((s: number, w: number) => s + w, 0) + Math.max(0, clipWidths.length - 1) * 4
+  let totalTrackPx: number = $derived.by(() =>
+    timeline.reduce((s: number, c: ClipEntry, i: number) =>
+      s + Math.max(80, Math.min(300, c.duration * 8)) + (i > 0 ? 4 : 0), 0)
   );
 
-  /** Playhead X pixel position from left of timeline-track */
-  let playheadX: number = $derived.by(() => {
-    if (!totalDuration || !totalTrackPx) return 0;
-    return (programCurrentTime / totalDuration) * totalTrackPx;
+  /** Playhead X: non-linear, accounts for clamped clip widths */
+  let playheadX: number = $derived(timeToPixel(programCurrentTime));
+
+  /** Ruler tick marks */
+  let rulerTicks: Array<{px: number, label: string}> = $derived.by(() => {
+    if (!totalDuration || !totalTrackPx) return [];
+    const candidates = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
+    let interval = candidates[0];
+    for (const c of candidates) {
+      interval = c;
+      if ((c / totalDuration) * totalTrackPx >= 80) break;
+    }
+    const ticks: Array<{px: number, label: string}> = [];
+    for (let t = 0; t <= totalDuration + 0.001; t += interval) {
+      const clamped = Math.min(t, totalDuration);
+      ticks.push({ px: timeToPixel(clamped), label: formatSecs(clamped) });
+      if (clamped >= totalDuration) break;
+    }
+    return ticks;
   });
 
   // Export
@@ -390,17 +403,17 @@
       // Program player shares module with source player
 
       programPlayer = new sourceModule.OmakasePlayer({ playerHTMLElementId: 'omakase-program-monitor' });
+
+      // Subscribe to time changes immediately (before loadVideo) so playback updates are captured
+      programSubs.push(programPlayer.video.onVideoTimeChange$.subscribe({
+        next: (ev: any) => {
+          programCurrentTime = ev.currentTime;
+          autoScrollPlayhead();
+        }
+      }));
+
       programSubs.push(programPlayer.loadVideo(manifestUrl, { protocol: 'hls' }).subscribe({
-        next: () => {
-          programPlayerReady = true;
-          // Sync playhead with program player time
-          programSubs.push(programPlayer.video.onVideoTimeChange$.subscribe({
-            next: (ev: any) => {
-              programCurrentTime = ev.currentTime;
-              autoScrollPlayhead();
-            }
-          }));
-        },
+        next: () => { programPlayerReady = true; },
         error: (err: any) => { addToast(`Program player error: ${errorMessage(err)}`, 'error'); },
       }));
     } catch (err) {
@@ -535,21 +548,22 @@
 
   // Keyboard shortcuts
   function autoScrollPlayhead(): void {
-    if (!timelineTrackEl) return;
-    const el = timelineTrackEl;
+    if (!timelineScrollEl) return;
+    const el = timelineScrollEl;
     const x = playheadX;
-    const margin = 60;
-    if (x < el.scrollLeft + margin) {
+    const margin = 80;
+    const viewportX = x - el.scrollLeft;
+    if (viewportX < margin) {
       el.scrollLeft = Math.max(0, x - margin);
-    } else if (x > el.scrollLeft + el.clientWidth - margin) {
-      el.scrollLeft = x - el.clientWidth + margin;
+    } else if (viewportX > el.clientWidth - margin) {
+      el.scrollLeft = x - (el.clientWidth - margin);
     }
   }
 
   function onPlayheadMouseDown(e: MouseEvent): void {
     e.preventDefault();
+    e.stopPropagation();
     playheadDragging = true;
-    seekProgramToX(e.clientX);
     window.addEventListener('mousemove', onPlayheadMouseMove);
     window.addEventListener('mouseup', onPlayheadMouseUp, { once: true });
   }
@@ -565,21 +579,54 @@
   }
 
   function onTrackClick(e: MouseEvent): void {
-    // Only fire when clicking the ruler/track directly (not on clips)
     const target = e.target as HTMLElement;
-    if (target.closest('.timeline-clip')) return;
+    if (target.closest('.timeline-clip') || target.closest('.playhead')) return;
     seekProgramToX(e.clientX);
   }
 
   function seekProgramToX(clientX: number): void {
-    if (!timelineTrackEl || !totalDuration || !totalTrackPx) return;
-    const rect = timelineTrackEl.getBoundingClientRect();
-    const x = clientX - rect.left + timelineTrackEl.scrollLeft;
-    const t = Math.max(0, Math.min(totalDuration, (x / totalTrackPx) * totalDuration));
+    if (!timelineScrollEl || !totalDuration) return;
+    const rect = timelineScrollEl.getBoundingClientRect();
+    const contentX = clientX - rect.left + timelineScrollEl.scrollLeft;
+    const t = Math.max(0, Math.min(totalDuration, pixelToTime(contentX)));
     programCurrentTime = t;
     if (programPlayer?.video) {
       programPlayer.video.seekToTime(t).subscribe();
     }
+  }
+
+  /** Convert timeline time (seconds) → absolute pixel X, accounting for clamped clip widths */
+  function timeToPixel(t: number): number {
+    let px = 0;
+    let elapsed = 0;
+    for (let i = 0; i < timeline.length; i++) {
+      const dur = timeline[i].duration;
+      const w = Math.max(80, Math.min(300, dur * 8));
+      if (elapsed + dur >= t || i === timeline.length - 1) {
+        const frac = dur > 0 ? Math.min(1, Math.max(0, (t - elapsed) / dur)) : 0;
+        return px + frac * w;
+      }
+      px += w + 4;
+      elapsed += dur;
+    }
+    return px;
+  }
+
+  /** Convert absolute pixel X → timeline time (seconds) */
+  function pixelToTime(px: number): number {
+    let pxOffset = 0;
+    let elapsed = 0;
+    for (let i = 0; i < timeline.length; i++) {
+      const dur = timeline[i].duration;
+      const w = Math.max(80, Math.min(300, dur * 8));
+      if (px <= pxOffset + w || i === timeline.length - 1) {
+        const frac = w > 0 ? Math.max(0, Math.min(1, (px - pxOffset) / w)) : 0;
+        return elapsed + frac * dur;
+      }
+      pxOffset += w + 4;
+      elapsed += dur;
+    }
+    return totalDuration;
   }
 
   function handleKeydown(e: KeyboardEvent): void {
@@ -802,50 +849,57 @@
       </p>
     {:else}
       <div
-        class="timeline-ruler"
+        class="timeline-scroll-area"
+        bind:this={timelineScrollEl}
         onclick={onTrackClick}
         role="presentation"
       >
-        <div
-          class="timeline-track"
-          bind:this={timelineTrackEl}
-        >
-          {#each timeline as clip, idx}
-            <!-- Clip width proportional to duration (min 80px) -->
-            {@const w = Math.max(80, Math.min(300, clip.duration * 8))}
-            {@const thumb = binThumbnails[clip.flowId] ?? null}
-            {#if !thumb}{ensureThumb(clip.flowId)}{/if}
-            <div
-              class="timeline-clip"
-              style="width:{w}px"
-              draggable="true"
-              ondragstart={(e) => onClipDragStart(e, idx)}
-              ondragover={onClipDragOver}
-              ondrop={(e) => onClipDrop(e, idx)}
-              role="listitem"
-            >
-              {#if thumb}
-                <div class="clip-thumb" style="background-image:url('{thumb}')"></div>
-              {/if}
-              <div class="clip-body">
-                <div class="clip-label" title="{clip.flowLabel} ({clip.segments.length} segs)">
-                  {clip.flowLabel}
-                </div>
-                <div class="clip-meta">
-                  {formatSecs(clip.duration)} · {clip.segments.length} seg{clip.segments.length !== 1 ? 's' : ''}
-                </div>
+        <div class="timeline-inner" style="min-width:{totalTrackPx}px">
+          <!-- Ruler with timecodes -->
+          <div class="ruler-bar">
+            {#each rulerTicks as tick}
+              <div class="ruler-tick" style="left:{tick.px}px">
+                <span>{tick.label}</span>
               </div>
-              <button
-                class="clip-remove"
-                onclick={() => removeClip(clip.id)}
-                title="Remove clip"
-              >✕</button>
-            </div>
-          {/each}
-        </div>
+            {/each}
+          </div>
 
-        <!-- Playhead -->
-        {#if timeline.length > 0 && totalTrackPx > 0}
+          <!-- Clips -->
+          <div class="clips-row">
+            {#each timeline as clip, idx}
+              {@const w = Math.max(80, Math.min(300, clip.duration * 8))}
+              {@const thumb = binThumbnails[clip.flowId] ?? null}
+              {#if !thumb}{ensureThumb(clip.flowId)}{/if}
+              <div
+                class="timeline-clip"
+                style="width:{w}px"
+                draggable="true"
+                ondragstart={(e) => onClipDragStart(e, idx)}
+                ondragover={onClipDragOver}
+                ondrop={(e) => onClipDrop(e, idx)}
+                role="listitem"
+              >
+                {#if thumb}
+                  <div class="clip-thumb" style="background-image:url('{thumb}')"></div>
+                {/if}
+                <div class="clip-body">
+                  <div class="clip-label" title="{clip.flowLabel} ({clip.segments.length} segs)">
+                    {clip.flowLabel}
+                  </div>
+                  <div class="clip-meta">
+                    {formatSecs(clip.duration)} · {clip.segments.length} seg{clip.segments.length !== 1 ? 's' : ''}
+                  </div>
+                </div>
+                <button
+                  class="clip-remove"
+                  onclick={() => removeClip(clip.id)}
+                  title="Remove clip"
+                >✕</button>
+              </div>
+            {/each}
+          </div>
+
+          <!-- Playhead -->
           <div
             class="playhead"
             style="left:{playheadX}px"
@@ -857,7 +911,7 @@
             aria-valuemax={totalDuration}
             tabindex="0"
           ></div>
-        {/if}
+        </div>
       </div>
     {/if}
   </div>
@@ -1174,37 +1228,69 @@
 
   .btn-small.danger:hover { border-color: var(--error, #c0392b); color: var(--error, #c0392b); }
 
-  .timeline-ruler {
-    position: relative;
+  /* Timeline scroll container */
+  .timeline-scroll-area {
     flex: 1;
-    overflow: hidden; /* clip the playhead vertically */
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: #3a5a7a #1a2530;
+    cursor: default;
+  }
+
+  .timeline-scroll-area::-webkit-scrollbar { height: 5px; }
+  .timeline-scroll-area::-webkit-scrollbar-track { background: #1a2530; border-radius: 3px; }
+  .timeline-scroll-area::-webkit-scrollbar-thumb { background: #3a5a7a; border-radius: 3px; }
+
+  /* Inner content — full track width, position:relative for playhead */
+  .timeline-inner {
+    position: relative;
     display: flex;
     flex-direction: column;
   }
 
-  .timeline-track {
+  /* Ruler */
+  .ruler-bar {
+    position: relative;
+    height: 20px;
+    flex-shrink: 0;
+    background: #0f1c27;
+    border-bottom: 1px solid #2a4560;
+    user-select: none;
+    cursor: pointer;
+  }
+
+  .ruler-tick {
+    position: absolute;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    pointer-events: none;
+  }
+
+  .ruler-tick::before {
+    content: '';
+    width: 1px;
+    height: 5px;
+    background: #4a7a9a;
+    flex-shrink: 0;
+  }
+
+  .ruler-tick span {
+    font-size: 9px;
+    color: #6a9aba;
+    white-space: nowrap;
+    padding-left: 2px;
+    line-height: 1.4;
+  }
+
+  /* Clips row */
+  .clips-row {
     display: flex;
     gap: 4px;
-    overflow-x: auto;
-    overflow-y: hidden;
     padding: 4px 0 6px;
     align-items: stretch;
-    scrollbar-width: thin;
-    scrollbar-color: #3a5a7a #1a2530;
-  }
-
-  .timeline-track::-webkit-scrollbar {
-    height: 5px;
-  }
-
-  .timeline-track::-webkit-scrollbar-track {
-    background: #1a2530;
-    border-radius: 3px;
-  }
-
-  .timeline-track::-webkit-scrollbar-thumb {
-    background: #3a5a7a;
-    border-radius: 3px;
   }
 
   .timeline-clip {
@@ -1285,12 +1371,12 @@
     height: 100%;
     background: #e74c3c;
     transform: translateX(-1px);
-    pointer-events: all;
     cursor: ew-resize;
     z-index: 10;
-    transition: left 0.05s linear;
+    pointer-events: all;
   }
 
+  /* Triangle handle at top of ruler */
   .playhead::before {
     content: '';
     position: absolute;
@@ -1301,7 +1387,7 @@
     height: 0;
     border-left: 6px solid transparent;
     border-right: 6px solid transparent;
-    border-top: 8px solid #e74c3c;
+    border-top: 10px solid #e74c3c;
   }
 
   /* Shared badge */
